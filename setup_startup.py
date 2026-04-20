@@ -1,20 +1,20 @@
-"""
-Setup Decypher to run on Windows startup
-"""
+"""Create or remove Decypher startup entries."""
 
 import os
 import sys
 
-def setup_startup():
-    # Get paths
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    startup_folder = os.path.join(
-        os.environ["APPDATA"],
-        "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
-    )
-    vbs_path = os.path.join(startup_folder, "run_decypher.vbs")
 
-    # Create VBS script that runs silently
+STARTUP_DIR_PARTS = ("Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+
+def startup_folder() -> str:
+    return os.path.join(os.environ["APPDATA"], *STARTUP_DIR_PARTS)
+
+
+def setup_startup():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    vbs_path = os.path.join(startup_folder(), "run_decypher.vbs")
+
     vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = "{script_dir}"
 WshShell.Run "pythonw overlay.py", 0, False
@@ -28,14 +28,14 @@ WshShell.Run "pythonw overlay.py", 0, False
 
 
 def remove_startup():
-    startup_folder = os.path.join(
-        os.environ["APPDATA"],
-        "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
-    )
-    vbs_path = os.path.join(startup_folder, "run_decypher.vbs")
+    removed = False
+    for filename in ("run_decypher.vbs", "Decypher.lnk"):
+        path = os.path.join(startup_folder(), filename)
+        if os.path.exists(path):
+            os.remove(path)
+            removed = True
 
-    if os.path.exists(vbs_path):
-        os.remove(vbs_path)
+    if removed:
         print("Startup entry removed.")
     else:
         print("No startup entry found.")

@@ -1,187 +1,1241 @@
-"""
-Decypher Overlay - Lightweight transparent overlay for Valorant
-Shows hidden IGNs in a small always-on-top window
-"""
-import tkinter as tk
+"""Decypher overlay for Valorant agent-select actions and death muting."""
+import json
+import os
+import signal
+import sys
 import threading
 import time
-import webbrowser
-import urllib.parse
-import urllib.request
-import io
-from valorant_api import ValorantLocalAPI, mute_valorant, is_valorant_muted, AUDIO_AVAILABLE
+import tkinter as tk
+from ctypes import wintypes
 from agent_select import AgentSelectOverlay
+from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 try:
-    from PIL import Image, ImageTk
+    import mss as _mss
+    import mss.tools as _mss_tools
+    from PIL import Image as _PILImage
+    _mss_instance = _mss.mss()
     PIL_AVAILABLE = True
+
+    def _screen_grab(bbox):
+        x0, y0, x1, y1 = bbox
+        monitor = {'left': x0, 'top': y0, 'width': x1 - x0, 'height': y1 - y0}
+        shot = _mss_instance.grab(monitor)
+        return _PILImage.frombytes('RGB', shot.size, shot.bgra, 'raw', 'BGRX')
 except ImportError:
-    PIL_AVAILABLE = False
+    try:
+        from PIL import ImageGrab as _ImageGrab
+        PIL_AVAILABLE = True
+
+        def _screen_grab(bbox):
+            return __screen_grab(bbox)
+    except ImportError:
+        PIL_AVAILABLE = False
+
+        def _screen_grab(bbox):
+            return None
 try:
     import ctypes
     WINDOWS = True
-except:
+except ImportError:
     WINDOWS = False
 WS_EX_TRANSPARENT = 32
 WS_EX_TOOLWINDOW = 128
 WS_EX_NOACTIVATE = 134217728
 GWL_EXSTYLE = -20
+GWL_WNDPROC = -4
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+WM_APP = 32768
+WM_TRAYICON = WM_APP + 1
+WM_LBUTTONUP = 514
+WM_RBUTTONUP = 517
+WM_CONTEXTMENU = 123
+NIM_ADD = 0
+NIM_DELETE = 2
+NIF_MESSAGE = 1
+NIF_ICON = 2
+NIF_TIP = 4
+IDI_APPLICATION = 32512
+MF_STRING = 0
+MF_SEPARATOR = 2048
+TPM_RIGHTBUTTON = 2
+TPM_RETURNCMD = 256
+TRAY_UID = 1
+TRAY_SHOW_HIDE_ID = 1001
+TRAY_CLICK_THROUGH_ID = 1002
+TRAY_EXIT_ID = 1003
+if WINDOWS:
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    try:
+        dwmapi = ctypes.WinDLL('dwmapi', use_last_error=True)
+    except OSError:
+        dwmapi = None
+else:
+    user32 = None
+    shell32 = None
+    dwmapi = None
+
+class RECT(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long), ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+
+class POINT(ctypes.Structure):
+    _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+class NOTIFYICONDATA(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.DWORD), ('hWnd', wintypes.HWND), ('uID', wintypes.UINT), ('uFlags', wintypes.UINT), ('uCallbackMessage', wintypes.UINT), ('hIcon', wintypes.HICON), ('szTip', wintypes.WCHAR * 128), ('dwState', wintypes.DWORD), ('dwStateMask', wintypes.DWORD), ('szInfo', wintypes.WCHAR * 256), ('uTimeoutOrVersion', wintypes.UINT), ('szInfoTitle', wintypes.WCHAR * 64), ('dwInfoFlags', wintypes.DWORD), ('guidItem', ctypes.c_byte * 16), ('hBalloonIcon', wintypes.HICON)]
+EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+WndProc = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+if WINDOWS:
+    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    user32.SetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    user32.CallWindowProcW.restype = ctypes.c_longlong
+    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = ctypes.c_longlong
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.LoadIconW.restype = wintypes.HICON
+    user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
+    user32.CreatePopupMenu.restype = wintypes.HMENU
 
 class DecypherOverlay:
-    RANK_TIERS = {'Unranked': 0, 'Iron 1': 3, 'Iron 2': 4, 'Iron 3': 5, 'Bronze 1': 6, 'Bronze 2': 7, 'Bronze 3': 8, 'Silver 1': 9, 'Silver 2': 10, 'Silver 3': 11, 'Gold 1': 12, 'Gold 2': 13, 'Gold 3': 14, 'Platinum 1': 15, 'Platinum 2': 16, 'Platinum 3': 17, 'Diamond 1': 18, 'Diamond 2': 19, 'Diamond 3': 20, 'Ascendant 1': 21, 'Ascendant 2': 22, 'Ascendant 3': 23, 'Immortal 1': 24, 'Immortal 2': 25, 'Immortal 3': 26, 'Radiant': 27}
-    COMP_TIER_UUID = '03621f52-342b-cf4e-4f86-9350a49c6d04'
-    PARTY_COLORS = ['#f97316', '#22c55e', '#a855f7', '#eab308', '#06b6d4']
+    FONT_FAMILY = 'Bahnschrift SemiCondensed'
+    DEFAULT_HOTKEYS = {'hide_show': 'F2', 'click_through': 'F3', 'mute_on_death': 'F4', 'manual_mute': 'F5'}
+    HOTKEY_ACTIONS = (('hide_show', 'Hide/Show'), ('click_through', 'Click-through'), ('mute_on_death', 'Auto-Mute'), ('manual_mute', 'Manual Mute'))
+    MODIFIER_ORDER = ('CTRL', 'ALT', 'SHIFT')
+    MODIFIER_VK = {'CTRL': 17, 'ALT': 18, 'SHIFT': 16}
+    KEY_ALIASES = {'CONTROL': 'CTRL', 'CONTROL_L': 'CTRL', 'CONTROL_R': 'CTRL', 'CTRL_L': 'CTRL', 'CTRL_R': 'CTRL', 'ALT_L': 'ALT', 'ALT_R': 'ALT', 'SHIFT_L': 'SHIFT', 'SHIFT_R': 'SHIFT', 'ESCAPE': 'ESC', 'RETURN': 'ENTER', 'PRIOR': 'PAGEUP', 'NEXT': 'PAGEDOWN', 'PGUP': 'PAGEUP', 'PGDN': 'PAGEDOWN', 'DEL': 'DELETE', 'INS': 'INSERT', 'EQUALS': 'EQUAL', 'QUOTE': 'APOSTROPHE', 'BRACKETLEFT': 'LBRACKET', 'BRACKETRIGHT': 'RBRACKET', ' ': 'SPACE'}
+    KEY_NAME_TO_VK = {**{f'F{index}': 112 + index - 1 for index in range(1, 25)}, **{chr(code): code for code in range(ord('A'), ord('Z') + 1)}, **{str(index): 48 + index for index in range(10)}, 'SPACE': 32, 'TAB': 9, 'ENTER': 13, 'BACKSPACE': 8, 'INSERT': 45, 'DELETE': 46, 'HOME': 36, 'END': 35, 'PAGEUP': 33, 'PAGEDOWN': 34, 'LEFT': 37, 'UP': 38, 'RIGHT': 39, 'DOWN': 40, 'CAPSLOCK': 20, 'NUMLOCK': 144, 'SCROLLLOCK': 145, 'PAUSE': 19, 'PRINTSCREEN': 44, 'SEMICOLON': 186, 'EQUAL': 187, 'COMMA': 188, 'MINUS': 189, 'PERIOD': 190, 'SLASH': 191, 'GRAVE': 192, 'LBRACKET': 219, 'BACKSLASH': 220, 'RBRACKET': 221, 'APOSTROPHE': 222, 'NUMPAD0': 96, 'NUMPAD1': 97, 'NUMPAD2': 98, 'NUMPAD3': 99, 'NUMPAD4': 100, 'NUMPAD5': 101, 'NUMPAD6': 102, 'NUMPAD7': 103, 'NUMPAD8': 104, 'NUMPAD9': 105}
 
     def __init__(self):
         self.api = ValorantLocalAPI()
-        self.rank_icons = {}
         self.running = True
         self.visible = False
+        self.tray_forced_visible = False
         self.click_through = False
-        self.player_data = {}
-        self._drag_data = {'x': 0, 'y': 0}
         self.in_match = False
         self.in_pregame = False
         self.agent_overlay = None
-        self.current_match_id = None
+        self._drag_data = {'x': 0, 'y': 0}
+        self.config_path = os.path.join(self._runtime_base_dir(), 'decypher_config.json')
+        self.hotkeys = self._load_hotkeys()
+        self.hide_show_hotkey = self.hotkeys['hide_show']
+        self.click_through_hotkey = self.hotkeys['click_through']
+        self.mute_on_death_hotkey = self.hotkeys['mute_on_death']
+        self.manual_mute_hotkey = self.hotkeys['manual_mute']
+        self.hotkey_widgets = {}
+        self.binding_capture = None
         self.death_mute_enabled = False
-        self.muted_by_us = False
-        self.last_death_count = None
-        self.last_round_score_total = None
+        self.death_muted = False
+        self.manual_muted = False
+        self.strip_detected = False
+        self.strip_ignore_until_clear = False
+        self.strip_startup_ignore_active = False
+        self.strip_startup_score_total = None
+        self.strip_startup_clear_since = None
+        self.strip_startup_clear_seconds = 1.25
+        self.last_menu_button_seen_ts = 0.0
+        self.menu_recent_seconds = 2.25
+        self.round_start_cooldown_until = 0.0
+        self.round_start_cooldown_seconds = 25.0
+        self.last_cooldown_block_log_ts = 0.0
+        self.round_start_requires_clear = False
+        self.round_start_clear_since = None
+        self.round_start_clear_seconds = 4.0
+        self.strip_enable_armed_ts = 0.0
+        self.strip_enable_grace_seconds = 0.75
+        self.score_total_at_mute = None
+        self.last_score_poll_ts = 0.0
+        self.score_poll_interval_muted = 0.25
+        self.live_score_total = None
+        self.last_live_score_poll_ts = 0.0
+        self.live_score_poll_interval = 0.5
+        self.current_mode_id = ''
+        self.current_game_state = 'Menu'
+        self.current_agent_id = None
+        self.current_agent_name = None
+        self.normal_round_start_cooldown_seconds = 25.0
+        self.extended_round_start_cooldown_seconds = 42.0
+        self.agent_catalog_load_started = False
+        self.menu_button_detected = False
+        self.clove_ult_detected = False
+        self.clove_ult_last_ready_ts = 0.0
+        self.clove_ult_ready_grace_seconds = 1.5
+        self.clove_ult_pending_until = 0.0
+        self.clove_ult_pending_score_total = None
+        self.clove_ult_pending_seconds = 2.5
+        self.clove_ult_outline_windows = {}
+        self.tray_hwnd = None
+        self.tray_icon_added = False
+        self.tray_wndproc = None
+        self.tray_old_wndproc = None
+        self.strip_x_regions = ((0.8875, 0.9225),)
+        self.strip_y_min_ratio = 0.27
+        self.strip_y_max_ratio = 0.56
+        self.strip_target_rgb = (240, 49, 86)
+        self.strip_rgb_tolerance = 24
+        self.strip_min_horizontal_red_ratio = 0.68
+        self.strip_min_red_run_rows = 24
+        self.menu_button_region = (0.43, 0.57, 0.91, 0.958)
+        self.menu_button_green_rgb = (37, 186, 129)
+        self.menu_button_green_tolerance = 70
+        self.menu_button_min_horizontal_ratio = 0.18
+        self.menu_button_min_horizontal_run_rows = 2
+        self.menu_button_min_vertical_ratio = 0.18
+        self.menu_button_min_vertical_run_cols = 2
+        self.menu_button_min_white_fill_ratio = 0.58
+        self.menu_button_min_white_fill_run_rows = 18
+        self.clove_ult_region = (0.5707, 0.6053, 0.966, 0.97)
+        self.clove_ult_ready_rgb = (95, 238, 184)
+        self.clove_ult_rgb_tolerance = 24
+        self.clove_ult_min_horizontal_ratio = 0.22
+        self.clove_ult_min_run_rows = 2
         self.root = tk.Tk()
         self.root.title('Decypher')
         self.root.attributes('-topmost', True)
         self.root.attributes('-alpha', 0.92)
         self.root.overrideredirect(True)
         self.root.configure(bg='#0d1117')
-        window_width = 320
-        window_height = 700
-        screen_width = self.root.winfo_screenwidth()
-        x_pos = screen_width - window_width - 20
-        y_pos = 50
-        self.root.geometry(f'{window_width}x{window_height}+{x_pos}+{y_pos}')
+        self.window_width = 320
+        self.root.geometry(f'{self.window_width}x1+0+50')
         self.header = tk.Frame(self.root, bg='#161b22')
         self.header.pack(fill='x')
         title_row = tk.Frame(self.header, bg='#161b22')
         title_row.pack(fill='x', padx=10, pady=8)
-        title = tk.Label(title_row, text='DECYPHER', font=('Segoe UI', 12, 'bold'), fg='#58a6ff', bg='#161b22')
+        title = tk.Label(title_row, text='DECYPHER', font=(self.FONT_FAMILY, 16, 'bold'), fg='#58a6ff', bg='#161b22')
         title.pack(side='left')
         btn_frame = tk.Frame(title_row, bg='#161b22')
         btn_frame.pack(side='right')
-        self.pin_btn = tk.Label(btn_frame, text='📌', font=('Segoe UI', 10), fg='#8b949e', bg='#161b22', cursor='hand2')
-        self.pin_btn.pack(side='left', padx=4)
-        self.pin_btn.bind('<Button-1>', self.toggle_click_through)
-        close_btn = tk.Label(btn_frame, text='✕', font=('Segoe UI', 11), fg='#8b949e', bg='#161b22', cursor='hand2')
+        self.click_through_btn = tk.Label(btn_frame, text='🖱', font=(self.FONT_FAMILY, 12), fg='#8b949e', bg='#161b22', cursor='hand2')
+        self.click_through_btn.pack(side='left', padx=4)
+        self.click_through_btn.bind('<Button-1>', self.toggle_click_through)
+        close_btn = tk.Label(btn_frame, text='✕', font=(self.FONT_FAMILY, 13), fg='#8b949e', bg='#161b22', cursor='hand2')
         close_btn.pack(side='left', padx=4)
-        close_btn.bind('<Button-1>', lambda e: self.close())
-        close_btn.bind('<Enter>', lambda e: close_btn.configure(fg='#f85149'))
-        close_btn.bind('<Leave>', lambda e: close_btn.configure(fg='#8b949e'))
-        self.status_label = tk.Label(self.header, text='Waiting for Valorant...', font=('Segoe UI', 9), fg='#8b949e', bg='#161b22')
-        self.status_label.pack(anchor='w', padx=10)
-        for w in [self.header, title_row, title, self.status_label]:
-            w.configure(cursor='fleur')
-            w.bind('<Button-1>', self.on_drag_start)
-            w.bind('<B1-Motion>', self.on_drag_motion)
-        self.player_frame = tk.Frame(self.root, bg='#0d1117')
-        self.player_frame.pack(fill='both', expand=True, padx=10, pady=(10, 5))
+        close_btn.bind('<Button-1>', lambda _event: self.close())
+        close_btn.bind('<Enter>', lambda _event: close_btn.configure(fg='#f85149'))
+        close_btn.bind('<Leave>', lambda _event: close_btn.configure(fg='#8b949e'))
+        self.status_label = tk.Label(self.header, text='Waiting for Valorant...', font=(self.FONT_FAMILY, 11), fg='#8b949e', bg='#161b22', anchor='center')
+        self.status_label.pack(fill='x', padx=10)
+        for widget in [self.header, title_row, title, self.status_label]:
+            widget.configure(cursor='fleur')
+            widget.bind('<Button-1>', self.on_drag_start)
+            widget.bind('<B1-Motion>', self.on_drag_motion)
         footer = tk.Frame(self.root, bg='#161b22')
         footer.pack(fill='x', side='bottom')
         hints_frame = tk.Frame(footer, bg='#161b22')
-        hints_frame.pack(fill='x', padx=10, pady=(6, 4))
-        hint1 = tk.Label(hints_frame, text='Click name → Tracker.gg', font=('Segoe UI', 8), fg='#8b949e', bg='#161b22')
-        hint1.pack(anchor='w')
-        hint2 = tk.Label(hints_frame, text='F2: Hide/Show  |  F3: Click-through', font=('Segoe UI', 8), fg='#8b949e', bg='#161b22')
-        hint2.pack(anchor='w')
+        hints_frame.pack(fill='x', padx=10, pady=(8, 6))
+        self._build_hotkey_controls(hints_frame)
         if AUDIO_AVAILABLE:
-            sep = tk.Frame(footer, bg='#30363d', height=1)
-            sep.pack(fill='x', padx=10, pady=4)
             toggle_frame = tk.Frame(footer, bg='#161b22')
-            toggle_frame.pack(fill='x', padx=10, pady=(0, 8))
-            self.mute_toggle = tk.Label(toggle_frame, text='[ ] Mute on Death', font=('Consolas', 9), fg='#c9d1d9', bg='#161b22', cursor='hand2')
-            self.mute_toggle.pack(anchor='w')
+            toggle_frame.pack(fill='x', padx=10, pady=(0, 10))
+            self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2', width=22)
+            self.mute_toggle.pack(fill='x')
             self.mute_toggle.bind('<Button-1>', self.toggle_death_mute)
-            self.mute_status = tk.Label(toggle_frame, text='disabled', font=('Segoe UI', 8), fg='#6e7681', bg='#161b22')
-            self.mute_status.pack(anchor='w', padx=(28, 0))
+            self.mute_status = tk.Label(toggle_frame, text='disabled', font=(self.FONT_FAMILY, 10), fg='#6e7681', bg='#161b22')
+        self._position_main_window()
         self.root.withdraw()
         if WINDOWS:
             self.root.after(100, self._apply_overlay_styles)
+            self.root.after(150, self._create_tray_icon)
+            self.root.after(150, self._create_clove_ult_outline)
+            self.root.after(150, self._refresh_death_detection_loop)
         self.update_thread = threading.Thread(target=self.update_loop, daemon=True)
         self.update_thread.start()
         if WINDOWS:
             self.hotkey_thread = threading.Thread(target=self.hotkey_listener, daemon=True)
             self.hotkey_thread.start()
-        self.root.bind('<F2>', lambda e: self.toggle_visibility())
-        self.root.bind('<F3>', lambda e: self.toggle_click_through())
-        self.root.bind('<Escape>', lambda e: self.close())
+        self.root.bind('<KeyPress>', self._handle_hotkey_capture)
+        self.root.bind('<Escape>', self._handle_escape)
+
+    def _position_main_window(self):
+        self.root.update_idletasks()
+        height = max(1, self.root.winfo_reqheight())
+        screen_width = self.root.winfo_screenwidth()
+        x_pos = screen_width - self.window_width - 20
+        y_pos = 50
+        self.root.geometry(f'{self.window_width}x{height}+{x_pos}+{y_pos}')
+
+    @staticmethod
+    def _runtime_base_dir() -> str:
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(os.path.abspath(sys.argv[0]))
+        return os.path.dirname(os.path.abspath(__file__))
+
+    @classmethod
+    def _clean_key_name(cls, key):
+        key = str(key or '').strip().upper().replace('<', '').replace('>', '')
+        key = key.replace('-', '+')
+        return cls.KEY_ALIASES.get(key, key)
+
+    @classmethod
+    def _parse_hotkey(cls, value):
+        raw_parts = [part for part in str(value or '').replace(' ', '').split('+') if part]
+        if not raw_parts:
+            return None
+        modifiers = []
+        main_key = None
+        for raw_part in raw_parts:
+            key = cls._clean_key_name(raw_part)
+            if key in cls.MODIFIER_VK:
+                if key not in modifiers:
+                    modifiers.append(key)
+                continue
+            if key == 'ESC' or key not in cls.KEY_NAME_TO_VK or main_key is not None:
+                return None
+            main_key = key
+        if main_key is None:
+            return None
+        ordered_modifiers = [modifier for modifier in cls.MODIFIER_ORDER if modifier in modifiers]
+        return (ordered_modifiers, main_key)
+
+    @classmethod
+    def _format_hotkey(cls, value):
+        parsed = cls._parse_hotkey(value)
+        if not parsed:
+            return None
+        modifiers, main_key = parsed
+        return '+'.join([*modifiers, main_key])
+
+    @classmethod
+    def _normalize_hotkey(cls, value, fallback):
+        return cls._format_hotkey(value) or fallback
+
+    def _load_hotkeys(self):
+        hotkeys = dict(self.DEFAULT_HOTKEYS)
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as config_file:
+                config = json.load(config_file)
+        except FileNotFoundError:
+            return hotkeys
+        except Exception:
+            return hotkeys
+        if isinstance(config, dict):
+            for name, fallback in self.DEFAULT_HOTKEYS.items():
+                hotkeys[name] = self._normalize_hotkey(config.get(name), fallback)
+        return hotkeys
+
+    def _save_hotkeys(self):
+        config = {}
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as config_file:
+                loaded_config = json.load(config_file)
+            if isinstance(loaded_config, dict):
+                config.update(loaded_config)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        config.update(self.hotkeys)
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as config_file:
+                json.dump(config, config_file, indent=2)
+                config_file.write('\n')
+        except Exception as exc:
+            pass
+
+    def _set_hotkey(self, name, hotkey):
+        self.hotkeys[name] = hotkey
+        self.hide_show_hotkey = self.hotkeys['hide_show']
+        self.click_through_hotkey = self.hotkeys['click_through']
+        self.mute_on_death_hotkey = self.hotkeys['mute_on_death']
+        self.manual_mute_hotkey = self.hotkeys['manual_mute']
+        self._save_hotkeys()
+        self._refresh_hotkey_controls()
+
+    def _hotkey_action_enabled(self, name):
+        return AUDIO_AVAILABLE or name not in ('mute_on_death', 'manual_mute')
+
+    def _build_hotkey_controls(self, parent):
+        actions = [action for action in self.HOTKEY_ACTIONS if self._hotkey_action_enabled(action[0])]
+        for row_start in range(0, len(actions), 2):
+            row = tk.Frame(parent, bg='#161b22')
+            row.pack(fill='x', pady=1)
+            row.grid_columnconfigure(0, weight=1, uniform='hotkeys')
+            row.grid_columnconfigure(1, weight=1, uniform='hotkeys')
+            for column, (name, label) in enumerate(actions[row_start:row_start + 2]):
+                self._create_hotkey_item(row, name, label, column)
+
+    def _create_hotkey_item(self, parent, name, label, column):
+        item = tk.Frame(parent, bg='#161b22', cursor='hand2')
+        item.grid(row=0, column=column, sticky='w', padx=(0, 8), pady=1)
+        key_label = tk.Label(item, text=self.hotkeys[name], font=(self.FONT_FAMILY, 10, 'bold'), fg='#0d1117', bg='#8b949e', padx=5, pady=0, width=8, cursor='hand2')
+        key_label.pack(side='left')
+        action_label = tk.Label(item, text=f' {label}', font=(self.FONT_FAMILY, 10), fg='#8b949e', bg='#161b22', cursor='hand2')
+        action_label.pack(side='left')
+        self.hotkey_widgets[name] = {'item': item, 'key': key_label, 'action': action_label}
+        for widget in (item, key_label, action_label):
+            widget.bind('<Button-1>', lambda _event, hotkey_name=name: self._begin_hotkey_capture(hotkey_name))
+
+    def _refresh_hotkey_controls(self):
+        for name, widgets in self.hotkey_widgets.items():
+            is_active = self.binding_capture == name
+            widgets['key'].configure(text='...' if is_active else self.hotkeys[name], fg='#0d1117', bg='#d29922' if is_active else '#8b949e')
+
+    def _begin_hotkey_capture(self, name):
+        self.binding_capture = name
+        self._refresh_hotkey_controls()
+        self._apply_overlay_styles()
+        self.root.lift()
+        self.root.focus_force()
+        return 'break'
+
+    def _cancel_hotkey_capture(self):
+        if not self.binding_capture:
+            return False
+        name = self.binding_capture
+        self.binding_capture = None
+        self._refresh_hotkey_controls()
+        self._apply_overlay_styles()
+        return True
+
+    def _event_to_hotkey(self, event):
+        key = self._clean_key_name(event.keysym)
+        if key == 'ESC':
+            return 'ESC'
+        if key in self.MODIFIER_VK:
+            return None
+        if key.startswith('KP_'):
+            keypad_key = key[3:]
+            if keypad_key.isdigit():
+                key = f'NUMPAD{keypad_key}'
+        if key not in self.KEY_NAME_TO_VK:
+            char = self._clean_key_name(getattr(event, 'char', ''))
+            if len(char) == 1 and char.isalnum():
+                key = char
+            else:
+                return None
+        modifiers = []
+        state = int(getattr(event, 'state', 0))
+        if state & 4:
+            modifiers.append('CTRL')
+        if state & 131072 or state & 8:
+            modifiers.append('ALT')
+        if state & 1:
+            modifiers.append('SHIFT')
+        return '+'.join([*modifiers, key])
+
+    def _flash_hotkey_error(self, name):
+        widgets = self.hotkey_widgets.get(name)
+        if not widgets:
+            return
+        widgets['key'].configure(fg='white', bg='#f85149')
+        self.root.after(350, self._refresh_hotkey_controls)
+
+    def _handle_hotkey_capture(self, event):
+        if not self.binding_capture:
+            return None
+        name = self.binding_capture
+        hotkey = self._event_to_hotkey(event)
+        if hotkey == 'ESC':
+            self._cancel_hotkey_capture()
+            return 'break'
+        hotkey = self._format_hotkey(hotkey)
+        if not hotkey:
+            self._flash_hotkey_error(name)
+            return 'break'
+        for other_name, other_hotkey in self.hotkeys.items():
+            if other_name != name and other_hotkey == hotkey:
+                self._flash_hotkey_error(name)
+                return 'break'
+        self.binding_capture = None
+        self._apply_overlay_styles()
+        self._set_hotkey(name, hotkey)
+        return 'break'
+
+    def _handle_escape(self, event=None):
+        if self._cancel_hotkey_capture():
+            return 'break'
+        return 'break'
+
+    def _hotkey_is_pressed(self, hotkey, user32_local):
+        parsed = self._parse_hotkey(hotkey)
+        if not parsed:
+            return False
+        modifiers, main_key = parsed
+        for modifier in modifiers:
+            if not user32_local.GetAsyncKeyState(self.MODIFIER_VK[modifier]) & 32768:
+                return False
+        return bool(user32_local.GetAsyncKeyState(self.KEY_NAME_TO_VK[main_key]) & 32768)
+
+    @staticmethod
+    def _set_window_long_ptr(hwnd, index, value):
+        if ctypes.sizeof(ctypes.c_void_p) == 8 and hasattr(user32, 'SetWindowLongPtrW'):
+            return user32.SetWindowLongPtrW(hwnd, index, ctypes.c_void_p(value))
+        return user32.SetWindowLongW(hwnd, index, value)
+
+    def _create_tray_icon(self):
+        if not WINDOWS or not shell32 or self.tray_icon_added:
+            return
+        try:
+            self.root.update_idletasks()
+            self.tray_hwnd = user32.GetParent(self.root.winfo_id())
+            self.tray_wndproc = WndProc(self._tray_window_proc)
+            callback_ptr = ctypes.cast(self.tray_wndproc, ctypes.c_void_p).value
+            self.tray_old_wndproc = self._set_window_long_ptr(self.tray_hwnd, GWL_WNDPROC, callback_ptr)
+            notify_data = NOTIFYICONDATA()
+            notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+            notify_data.hWnd = self.tray_hwnd
+            notify_data.uID = TRAY_UID
+            notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+            notify_data.uCallbackMessage = WM_TRAYICON
+            notify_data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
+            notify_data.szTip = 'Decypher'
+            if shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(notify_data)):
+                self.tray_icon_added = True
+        except Exception as exc:
+            pass
+
+    def _remove_tray_icon(self):
+        if not WINDOWS or not shell32:
+            return
+        if self.tray_icon_added and self.tray_hwnd:
+            notify_data = NOTIFYICONDATA()
+            notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+            notify_data.hWnd = self.tray_hwnd
+            notify_data.uID = TRAY_UID
+            try:
+                shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(notify_data))
+            except Exception:
+                pass
+            self.tray_icon_added = False
+        if self.tray_hwnd and self.tray_old_wndproc:
+            try:
+                self._set_window_long_ptr(self.tray_hwnd, GWL_WNDPROC, self.tray_old_wndproc)
+            except Exception:
+                pass
+        self.tray_hwnd = None
+        self.tray_old_wndproc = None
+        self.tray_wndproc = None
+
+    def _tray_window_proc(self, hwnd, message, wparam, lparam):
+        if message == WM_TRAYICON and int(wparam) == TRAY_UID:
+            tray_event = int(lparam)
+            if tray_event == WM_LBUTTONUP:
+                self.root.after(0, self._toggle_tray_visibility)
+            elif tray_event in (WM_RBUTTONUP, WM_CONTEXTMENU):
+                self.root.after(0, self._show_tray_menu)
+            return 0
+        if self.tray_old_wndproc:
+            return user32.CallWindowProcW(ctypes.c_void_p(self.tray_old_wndproc), hwnd, message, wparam, lparam)
+        return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+    def _show_tray_menu(self):
+        if not WINDOWS or not self.tray_hwnd:
+            return
+        point = POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            return
+        menu = user32.CreatePopupMenu()
+        if not menu:
+            return
+        show_hide_text = 'Hide Decypher' if self.visible else 'Show Decypher'
+        click_text = 'Disable Click-through' if self.click_through else 'Enable Click-through'
+        user32.AppendMenuW(menu, MF_STRING, TRAY_SHOW_HIDE_ID, show_hide_text)
+        user32.AppendMenuW(menu, MF_STRING, TRAY_CLICK_THROUGH_ID, click_text)
+        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        user32.AppendMenuW(menu, MF_STRING, TRAY_EXIT_ID, 'Exit')
+        user32.SetForegroundWindow(self.tray_hwnd)
+        command = user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, point.x, point.y, 0, self.tray_hwnd, None)
+        user32.DestroyMenu(menu)
+        if command == TRAY_SHOW_HIDE_ID:
+            self._toggle_tray_visibility()
+        elif command == TRAY_CLICK_THROUGH_ID:
+            self.toggle_click_through()
+        elif command == TRAY_EXIT_ID:
+            self.close()
+
+    def _show_from_tray(self):
+        self.tray_forced_visible = True
+        self.visible = True
+        self._position_main_window()
+        self.root.deiconify()
+        self.root.lift()
+        self._apply_overlay_styles()
+
+    def _hide_from_tray(self):
+        self.tray_forced_visible = False
+        self.visible = False
+        self.root.withdraw()
+
+    def _toggle_tray_visibility(self):
+        if self.visible:
+            self._hide_from_tray()
+        else:
+            self._show_from_tray()
+
+    def _create_clove_ult_outline(self):
+        if not WINDOWS:
+            return
+        for side in ('top', 'bottom', 'left', 'right'):
+            window = tk.Toplevel(self.root)
+            window.withdraw()
+            window.overrideredirect(True)
+            window.attributes('-topmost', True)
+            window.configure(bg='#ffbf00')
+            self.clove_ult_outline_windows[side] = window
+            window.after(100, lambda w=window: self._apply_outline_window_styles(w))
+
+    def _apply_outline_window_styles(self, window):
+        if not WINDOWS:
+            return
+        try:
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception:
+            pass
+
+    def _hide_clove_ult_outline(self):
+        for window in self.clove_ult_outline_windows.values():
+            try:
+                window.withdraw()
+            except Exception:
+                pass
+
+    def _show_clove_ult_outline(self, bbox):
+        if not self.clove_ult_outline_windows or not bbox:
+            return
+        x0, y0, x1, y1 = bbox
+        pad = 5
+        thickness = 3
+        outer_x0 = x0 - pad
+        outer_y0 = y0 - pad
+        outer_x1 = x1 + pad
+        outer_y1 = y1 + pad
+        width = max(1, outer_x1 - outer_x0)
+        height = max(1, outer_y1 - outer_y0)
+        color = '#39ff14' if self.clove_ult_detected else '#ffbf00'
+        geometries = {'top': (outer_x0, outer_y0 - thickness, width, thickness), 'bottom': (outer_x0, outer_y1, width, thickness), 'left': (outer_x0 - thickness, outer_y0, thickness, height), 'right': (outer_x1, outer_y0, thickness, height)}
+        for side, (x, y, w, h) in geometries.items():
+            window = self.clove_ult_outline_windows.get(side)
+            if not window:
+                continue
+            window.configure(bg=color)
+            window.geometry(f'{w}x{h}+{x}+{y}')
+            window.deiconify()
+            window.lift()
 
     def toggle_death_mute(self, event=None):
-        """Toggle immediate mute mode (API-independent fallback)."""
+        if self.binding_capture:
+            return
         self.death_mute_enabled = not self.death_mute_enabled
         if self.death_mute_enabled:
-            self.mute_toggle.configure(text='[x] Mute on Death', fg='#3fb950')
-            mute_valorant(True)
-            self.muted_by_us = True
-            self.mute_status.configure(text='muted (manual fallback)', fg='#3fb950')
-            self.last_death_count = None
-            self.last_round_score_total = None
-        else:
-            self.mute_toggle.configure(text='[ ] Mute on Death', fg='#c9d1d9')
-            self.mute_status.configure(text='disabled', fg='#6e7681')
-            if self.muted_by_us:
-                mute_valorant(False)
-                self.muted_by_us = False
-            self.last_death_count = None
-            self.last_round_score_total = None
-
-    def check_death_mute(self, game_state: str):
-        """Legacy auto-mute path disabled while live death endpoint is unavailable."""
-        if not self.death_mute_enabled or not AUDIO_AVAILABLE:
-            return
-        muted_now = is_valorant_muted()
-        if muted_now != self.muted_by_us:
-            self.muted_by_us = muted_now
-            status = 'muted (manual fallback)' if muted_now else 'enabled (manual fallback)'
-            color = '#3fb950' if muted_now else '#d29922'
-            self.root.after(0, lambda: self.mute_status.configure(text=status, fg=color))
-
-    def _split_players(self, players: list, game_state: str) -> tuple[list, list]:
-        """Split players into allies/enemies with robust fallbacks for varying TeamID formats."""
-        if not players:
-            return ([], [])
-        local_player = next((p for p in players if p.get('is_local')), None)
-        local_team = str(local_player.get('team') or '').strip().lower() if local_player else ''
-        if game_state == 'Deathmatch':
-            allies = [p for p in players if p.get('is_local')]
-            if not allies and players:
-                allies = [players[0]]
-            enemies = [p for p in players if p not in allies]
-            return (allies, enemies)
-        normalized_groups = {}
-        for p in players:
-            team_key = str(p.get('team') or '').strip().lower()
-            normalized_groups.setdefault(team_key, []).append(p)
-        non_empty_team_keys = [k for k in normalized_groups.keys() if k]
-        if local_team:
-            allies = [p for p in players if str(p.get('team') or '').strip().lower() == local_team]
-            enemies = [p for p in players if p not in allies]
-            return (allies, enemies)
-        if len(non_empty_team_keys) == 2:
-            team_a, team_b = non_empty_team_keys
-            allies = normalized_groups[team_a]
-            enemies = normalized_groups[team_b]
-            if team_b in {'blue', 'ally', 'allies', 'teamone', 'team1'}:
-                allies, enemies = (enemies, allies)
-            return (allies, enemies)
-        allies = []
-        enemies = []
-        for p in players:
-            team = str(p.get('team') or '').strip().lower()
-            if team in {'ally', 'blue', 'allies', 'teamone', 'team1'}:
-                allies.append(p)
-            elif team:
-                enemies.append(p)
+            now = time.time()
+            self.strip_enable_armed_ts = now
+            menu_recent = self._menu_seen_recently(now)
+            self.strip_ignore_until_clear = bool(self.strip_detected or menu_recent)
+            self.strip_startup_ignore_active = self.strip_ignore_until_clear
+            self.strip_startup_score_total = None
+            self.strip_startup_clear_since = None
+            if self.menu_button_detected:
+                self.last_menu_button_seen_ts = now
+            self.round_start_cooldown_until = 0.0
+            self.round_start_requires_clear = False
+            self.round_start_clear_since = None
+            if self.strip_startup_ignore_active:
+                self.last_score_poll_ts = 0.0
+            self.mute_toggle.configure(text='[ x ] Mute on Death', fg='#3fb950')
+            if menu_recent:
+                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+            elif self.strip_ignore_until_clear:
+                self.mute_status.configure(text='waiting for report clear', fg='#d29922')
             else:
-                allies.append(p)
-        return (allies, enemies)
+                self.mute_status.configure(text='armed (strip detection)', fg='#3fb950')
+            return
+        self.mute_toggle.configure(text='[   ] Mute on Death', fg='#c9d1d9')
+        self.mute_status.configure(text='disabled', fg='#6e7681')
+        if self.death_muted:
+            self._release_death_mute()
+        self.strip_ignore_until_clear = False
+        self.strip_startup_ignore_active = False
+        self.strip_startup_score_total = None
+        self.strip_startup_clear_since = None
+        self.clove_ult_pending_until = 0.0
+        self.clove_ult_pending_score_total = None
+        self.round_start_cooldown_until = 0.0
+        self.round_start_requires_clear = False
+        self.round_start_clear_since = None
+        self.strip_enable_armed_ts = 0.0
+        self.score_total_at_mute = None
+
+    def toggle_manual_mute(self, event=None):
+        if self.binding_capture:
+            return
+        previous = self.manual_muted
+        self.manual_muted = not self.manual_muted
+        if self._sync_target_mute() <= 0:
+            self.manual_muted = previous
+            self._sync_target_mute()
+            return
+        if self.manual_muted:
+            pass
+
+    def _enum_visible_windows(self):
+        if not WINDOWS:
+            return []
+        results = []
+
+        def callback(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.strip()
+            if title:
+                results.append((hwnd, title))
+            return True
+        user32.EnumWindows(EnumWindowsProc(callback), 0)
+        return results
+
+    def _find_valorant_window(self):
+        for hwnd, title in self._enum_visible_windows():
+            if 'valorant' in title.lower():
+                return (hwnd, title)
+        return None
+
+    def _get_window_rect(self, hwnd):
+        rect = RECT()
+        if dwmapi:
+            try:
+                if dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(DWMWA_EXTENDED_FRAME_BOUNDS), ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
+                    return (rect.left, rect.top, rect.right, rect.bottom)
+            except Exception:
+                pass
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        return (rect.left, rect.top, rect.right, rect.bottom)
+
+    def _build_strip_bbox(self, rect):
+        left, top, right, bottom = rect
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+        if width <= 0 or height <= 0:
+            return None
+        y0 = top + int(round(height * self.strip_y_min_ratio))
+        y1 = top + int(round(height * self.strip_y_max_ratio))
+        y0 = max(top, min(bottom, y0))
+        y1 = max(top, min(bottom, y1))
+        if y1 <= y0:
+            return None
+        bboxes = []
+        for x_min_ratio, x_max_ratio in self.strip_x_regions:
+            x0 = left + int(round(width * x_min_ratio))
+            x1 = left + int(round(width * x_max_ratio))
+            x0 = max(left, min(right, x0))
+            x1 = max(left, min(right, x1))
+            if x1 > x0:
+                bboxes.append((x0, y0, x1, y1))
+        return bboxes or None
+
+    def _build_ratio_bbox(self, rect, region):
+        left, top, right, bottom = rect
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+        if width <= 0 or height <= 0:
+            return None
+        x0_ratio, x1_ratio, y0_ratio, y1_ratio = region
+        x0 = left + int(round(width * x0_ratio))
+        x1 = left + int(round(width * x1_ratio))
+        y0 = top + int(round(height * y0_ratio))
+        y1 = top + int(round(height * y1_ratio))
+        x0 = max(left, min(right, x0))
+        x1 = max(left, min(right, x1))
+        y0 = max(top, min(bottom, y0))
+        y1 = max(top, min(bottom, y1))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
+    def _is_strip_red_pixel(self, rgb):
+        try:
+            red, green, blue = rgb[:3]
+        except Exception:
+            return False
+        target_red, target_green, target_blue = self.strip_target_rgb
+        return abs(red - target_red) <= self.strip_rgb_tolerance and abs(green - target_green) <= self.strip_rgb_tolerance and (abs(blue - target_blue) <= self.strip_rgb_tolerance)
+
+    def _is_menu_green_pixel(self, rgb):
+        try:
+            red, green, blue = rgb[:3]
+        except Exception:
+            return False
+        target_red, target_green, target_blue = self.menu_button_green_rgb
+        return green >= red + 35 and green >= blue + 20 and (abs(red - target_red) <= self.menu_button_green_tolerance) and (abs(green - target_green) <= self.menu_button_green_tolerance) and (abs(blue - target_blue) <= self.menu_button_green_tolerance)
+
+    def _is_menu_white_pixel(self, rgb):
+        try:
+            red, green, blue = rgb[:3]
+        except Exception:
+            return False
+        return red >= 185 and green >= 185 and (blue >= 175) and (max(red, green, blue) - min(red, green, blue) <= 55)
+
+    def _is_clove_ult_ready_pixel(self, rgb):
+        try:
+            red, green, blue = rgb[:3]
+        except Exception:
+            return False
+        target_red, target_green, target_blue = self.clove_ult_ready_rgb
+        tolerance = self.clove_ult_rgb_tolerance
+        return abs(red - target_red) <= tolerance and abs(green - target_green) <= tolerance and (abs(blue - target_blue) <= tolerance)
+
+    def _analyze_strip_bbox(self, bboxes):
+        if not PIL_AVAILABLE:
+            return False
+        if not bboxes:
+            return False
+        images = []
+        try:
+            for bbox in bboxes:
+                images.append(_screen_grab(bbox))
+        except Exception:
+            return False
+        height = min((image.size[1] for image in images))
+        current_run = 0
+        longest_run = 0
+        for y in range(height):
+            row_matches = True
+            for image in images:
+                pixels = image.load()
+                width = image.size[0]
+                red_pixels = 0
+                for x in range(width):
+                    if self._is_strip_red_pixel(pixels[x, y]):
+                        red_pixels += 1
+                if red_pixels / max(1, width) < self.strip_min_horizontal_red_ratio:
+                    row_matches = False
+                    break
+            if row_matches:
+                current_run += 1
+                longest_run = max(longest_run, current_run)
+            else:
+                current_run = 0
+        return longest_run >= self.strip_min_red_run_rows
+
+    def _has_menu_button_horizontal_border(self, pixels, width, height):
+        current_run = 0
+        for y in range(height):
+            green_pixels = 0
+            for x in range(width):
+                if self._is_menu_green_pixel(pixels[x, y]):
+                    green_pixels += 1
+            if green_pixels / max(1, width) >= self.menu_button_min_horizontal_ratio:
+                current_run += 1
+                if current_run >= self.menu_button_min_horizontal_run_rows:
+                    return True
+            else:
+                current_run = 0
+        return False
+
+    def _has_menu_button_vertical_border(self, pixels, width, height):
+        current_run = 0
+        for x in range(width):
+            green_pixels = 0
+            for y in range(height):
+                if self._is_menu_green_pixel(pixels[x, y]):
+                    green_pixels += 1
+            if green_pixels / max(1, height) >= self.menu_button_min_vertical_ratio:
+                current_run += 1
+                if current_run >= self.menu_button_min_vertical_run_cols:
+                    return True
+            else:
+                current_run = 0
+        return False
+
+    def _has_menu_button_white_fill(self, pixels, width, height):
+        current_run = 0
+        for y in range(height):
+            white_pixels = 0
+            for x in range(width):
+                if self._is_menu_white_pixel(pixels[x, y]):
+                    white_pixels += 1
+            if white_pixels / max(1, width) >= self.menu_button_min_white_fill_ratio:
+                current_run += 1
+                if current_run >= self.menu_button_min_white_fill_run_rows:
+                    return True
+            else:
+                current_run = 0
+        return False
+
+    def _analyze_menu_button_bbox(self, bbox, preloaded=None, origin=(0, 0)):
+        if not PIL_AVAILABLE or not bbox:
+            return False
+        try:
+            if preloaded is not None:
+                ox, oy = origin
+                image = preloaded.crop((bbox[0] - ox, bbox[1] - oy, bbox[2] - ox, bbox[3] - oy))
+            else:
+                image = _screen_grab(bbox)
+        except Exception:
+            return False
+        pixels = image.load()
+        width, height = image.size
+        has_green_border = self._has_menu_button_horizontal_border(pixels, width, height) and self._has_menu_button_vertical_border(pixels, width, height)
+        has_white_fill = self._has_menu_button_white_fill(pixels, width, height)
+        return has_green_border or has_white_fill
+
+    def _analyze_clove_ult_bbox(self, bbox, preloaded=None, origin=(0, 0)):
+        if not PIL_AVAILABLE or not bbox:
+            return False
+        try:
+            if preloaded is not None:
+                ox, oy = origin
+                image = preloaded.crop((bbox[0] - ox, bbox[1] - oy, bbox[2] - ox, bbox[3] - oy))
+            else:
+                image = _screen_grab(bbox)
+        except Exception:
+            return False
+        pixels = image.load()
+        width, height = image.size
+        current_run = 0
+        longest_run = 0
+        for y in range(height):
+            ready_pixels = 0
+            for x in range(width):
+                if self._is_clove_ult_ready_pixel(pixels[x, y]):
+                    ready_pixels += 1
+            if ready_pixels / max(1, width) >= self.clove_ult_min_horizontal_ratio:
+                current_run += 1
+                longest_run = max(longest_run, current_run)
+            else:
+                current_run = 0
+        return longest_run >= self.clove_ult_min_run_rows
+
+    def _refresh_death_detection_loop(self):
+        if not self.running:
+            return
+        live_match_active = self.in_match and (not self.in_pregame)
+        if not WINDOWS or not live_match_active:
+            self.strip_detected = False
+            self.menu_button_detected = False
+            self.clove_ult_detected = False
+            self._hide_clove_ult_outline()
+            self._track_live_score_transition(False)
+            self._apply_strip_detection_mute(False)
+            self.root.after(400, self._refresh_death_detection_loop)
+            return
+        found = self._find_valorant_window()
+        if not found:
+            self.strip_detected = False
+            self.menu_button_detected = False
+            self.clove_ult_detected = False
+            self._hide_clove_ult_outline()
+            self._track_live_score_transition(live_match_active)
+            self._apply_strip_detection_mute(False)
+            self.root.after(400, self._refresh_death_detection_loop)
+            return
+        rect = self._get_window_rect(found[0])
+        now = time.time()
+        if self.death_muted:
+            self.strip_detected = False
+            self.menu_button_detected = False
+            self._track_live_score_transition(live_match_active)
+            self._apply_strip_detection_mute(live_match_active)
+            self.root.after(400, self._refresh_death_detection_loop)
+            return
+        strip_bbox = self._build_strip_bbox(rect)
+        self.strip_detected = self._analyze_strip_bbox(strip_bbox) if strip_bbox else False
+        menu_bbox = self._build_ratio_bbox(rect, self.menu_button_region)
+        clove_ult_bbox = self._build_ratio_bbox(rect, self.clove_ult_region)
+        bottom_image = None
+        bottom_origin = (0, 0)
+        candidate_bboxes = [b for b in (menu_bbox, clove_ult_bbox) if b]
+        if candidate_bboxes:
+            combined = (min((b[0] for b in candidate_bboxes)), min((b[1] for b in candidate_bboxes)), max((b[2] for b in candidate_bboxes)), max((b[3] for b in candidate_bboxes)))
+            try:
+                bottom_image = _screen_grab(combined)
+                bottom_origin = (combined[0], combined[1])
+            except Exception:
+                pass
+        self.menu_button_detected = self._analyze_menu_button_bbox(menu_bbox, bottom_image, bottom_origin) if menu_bbox else False
+        if self._is_current_agent_clove() and clove_ult_bbox:
+            prev = self.clove_ult_detected
+            self.clove_ult_detected = self._analyze_clove_ult_bbox(clove_ult_bbox, bottom_image, bottom_origin)
+            if self.clove_ult_detected:
+                self.clove_ult_last_ready_ts = now
+            if self.clove_ult_detected != prev:
+                pass
+            self._show_clove_ult_outline(clove_ult_bbox)
+        else:
+            self.clove_ult_detected = False
+            self._hide_clove_ult_outline()
+        if self.menu_button_detected:
+            self.last_menu_button_seen_ts = now
+        self._track_live_score_transition(live_match_active)
+        self._apply_strip_detection_mute(live_match_active)
+        self.root.after(400, self._refresh_death_detection_loop)
+
+    def _poll_score_delta(self, baseline_score):
+        now = time.time()
+        if now - self.last_score_poll_ts < self.score_poll_interval_muted:
+            return ('wait', baseline_score, None)
+        self.last_score_poll_ts = now
+        current_score = self.api.get_round_score_total()
+        if baseline_score is None:
+            return ('baseline', current_score, current_score)
+        if current_score is None:
+            return ('missing', baseline_score, None)
+        if current_score != baseline_score:
+            return ('changed', baseline_score, current_score)
+        return ('same', baseline_score, current_score)
+
+    def _half_change_score_for_current_mode(self):
+        mode = f'{self.current_mode_id} {self.current_game_state}'.lower()
+        if 'swift' in mode:
+            return 4
+        if 'spikerush' in mode or 'spike rush' in mode or 'quickbomb' in mode:
+            return 3
+        return 12
+
+    def _uses_extended_buy_phase(self, previous_score, current_score):
+        if previous_score is None or current_score is None:
+            return False
+        if current_score <= previous_score:
+            return False
+        half_score = self._half_change_score_for_current_mode()
+        if current_score == half_score:
+            return True
+        if half_score == 12 and current_score >= 24 and ((current_score - 24) % 2 == 0):
+            return True
+        return False
+
+    def _begin_round_start_cooldown(self, now=None, previous_score=None, current_score=None):
+        now = time.time() if now is None else now
+        self.round_start_cooldown_seconds = self.extended_round_start_cooldown_seconds if self._uses_extended_buy_phase(previous_score, current_score) else self.normal_round_start_cooldown_seconds
+        self.round_start_cooldown_until = now + self.round_start_cooldown_seconds
+        self.round_start_requires_clear = True
+        self.round_start_clear_since = None
+        self.strip_ignore_until_clear = bool(self.strip_detected)
+
+    def _menu_seen_recently(self, now):
+        return self.menu_button_detected or (self.last_menu_button_seen_ts > 0 and now - self.last_menu_button_seen_ts < self.menu_recent_seconds)
+
+    def _is_current_agent_clove(self):
+        return (self.current_agent_name or '').lower() == 'clove'
+
+    def _apply_round_start_gate(self, now):
+        if self.death_muted:
+            return False
+        if self.round_start_cooldown_until > now:
+            if self.strip_detected:
+                self.strip_ignore_until_clear = True
+                self.round_start_clear_since = None
+            remaining = max(1, int(self.round_start_cooldown_until - now))
+            self.mute_status.configure(text=f'round-start cooldown {remaining}s', fg='#d29922')
+            if self.strip_detected and now - self.last_cooldown_block_log_ts >= 2.0:
+                self.last_cooldown_block_log_ts = now
+            return True
+        if self.round_start_cooldown_until > 0:
+            self.round_start_cooldown_until = 0.0
+        if not self.round_start_requires_clear:
+            return False
+        if self.strip_detected:
+            if not self.strip_ignore_until_clear or self.round_start_clear_since is not None:
+                pass
+            self.strip_ignore_until_clear = True
+            self.round_start_clear_since = None
+            self.mute_status.configure(text='waiting for strip clear', fg='#d29922')
+            return True
+        self.strip_ignore_until_clear = False
+        if self.round_start_clear_since is None:
+            self.round_start_clear_since = now
+            self.mute_status.configure(text='confirming strip clear', fg='#d29922')
+            return True
+        clear_for = now - self.round_start_clear_since
+        if clear_for < self.round_start_clear_seconds:
+            self.mute_status.configure(text=f'confirming strip clear {int(clear_for)}s', fg='#d29922')
+            return True
+        self.round_start_requires_clear = False
+        self.round_start_clear_since = None
+        self.strip_ignore_until_clear = False
+        self.mute_status.configure(text='armed (strip detection)', fg='#3fb950')
+        return True
+
+    def _apply_clove_ult_gate(self, now):
+        if self.clove_ult_pending_until <= 0:
+            return False
+        score_status, baseline_score, current_score = self._poll_score_delta(self.clove_ult_pending_score_total)
+        if score_status == 'baseline':
+            self.clove_ult_pending_score_total = baseline_score
+        elif score_status == 'changed':
+            self.clove_ult_pending_until = 0.0
+            self.clove_ult_pending_score_total = None
+            self._begin_round_start_cooldown(now, baseline_score, current_score)
+            self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            return True
+        if not self.strip_detected:
+            self.clove_ult_pending_until = 0.0
+            self.clove_ult_pending_score_total = None
+            self.clove_ult_last_ready_ts = 0.0
+            self.strip_enable_armed_ts = 0.0
+            self.mute_status.configure(text='armed (strip detection)', fg='#3fb950')
+            return True
+        if now < self.clove_ult_pending_until:
+            remaining = max(0.1, self.clove_ult_pending_until - now)
+            self.mute_status.configure(text=f'waiting for Clove ult {remaining:.1f}s', fg='#d29922')
+            return True
+        self.clove_ult_pending_until = 0.0
+        self.clove_ult_pending_score_total = None
+        return False
+
+    def _track_live_score_transition(self, live_match_active: bool):
+        if not live_match_active:
+            return
+        now = time.time()
+        if now - self.last_live_score_poll_ts < self.live_score_poll_interval:
+            return
+        self.last_live_score_poll_ts = now
+        current_score = self.api.get_round_score_total()
+        if current_score is None:
+            return
+        if self.live_score_total is None:
+            self.live_score_total = current_score
+            return
+        if current_score == self.live_score_total:
+            return
+        previous_score = self.live_score_total
+        self.live_score_total = current_score
+        if not self.death_muted:
+            self._begin_round_start_cooldown(now, previous_score, current_score)
+            if self.death_mute_enabled and AUDIO_AVAILABLE:
+                self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+
+    def _apply_strip_detection_mute(self, live_match_active):
+        if not AUDIO_AVAILABLE or not self.death_mute_enabled:
+            return
+        if not live_match_active:
+            self.strip_ignore_until_clear = False
+            self.strip_startup_ignore_active = False
+            self.strip_startup_score_total = None
+            self.strip_startup_clear_since = None
+            self.strip_enable_armed_ts = 0.0
+            self.clove_ult_pending_until = 0.0
+            self.clove_ult_pending_score_total = None
+            self.score_total_at_mute = None
+            if self.death_muted and self._release_death_mute() > 0:
+                self._begin_round_start_cooldown()
+                status_text = 'death mute released; manual mute still on' if self.manual_muted else 'unmuted (not in live match)'
+                self.mute_status.configure(text=status_text, fg='#3fb950')
+            return
+        now = time.time()
+        if self.strip_startup_ignore_active:
+            score_status, baseline_score, current_score = self._poll_score_delta(self.strip_startup_score_total)
+            if self._menu_seen_recently(now):
+                self.strip_startup_clear_since = None
+                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+                return
+            if not self.strip_detected:
+                if self.strip_startup_clear_since is None:
+                    self.strip_startup_clear_since = now
+                    self.mute_status.configure(text='confirming report clear', fg='#d29922')
+                clear_for = now - self.strip_startup_clear_since
+                if clear_for >= self.strip_startup_clear_seconds:
+                    self.strip_startup_ignore_active = False
+                    self.strip_startup_score_total = None
+                    self.strip_startup_clear_since = None
+                    self.strip_ignore_until_clear = False
+                    self.strip_enable_armed_ts = 0.0
+                    self.mute_status.configure(text='armed (strip detection)', fg='#3fb950')
+                else:
+                    self.mute_status.configure(text=f'confirming report clear {int(clear_for)}s', fg='#d29922')
+                return
+            self.strip_startup_clear_since = None
+            if score_status == 'wait':
+                self.mute_status.configure(text='waiting for report clear', fg='#d29922')
+                return
+            if score_status == 'baseline':
+                self.strip_startup_score_total = baseline_score
+                if current_score is not None:
+                    self.mute_status.configure(text=f'waiting for report clear or score change from {current_score}', fg='#d29922')
+                return
+            if score_status == 'changed':
+                self.strip_startup_ignore_active = False
+                self.strip_startup_score_total = None
+                self.strip_startup_clear_since = None
+                self._begin_round_start_cooldown(now, baseline_score, current_score)
+                self.strip_enable_armed_ts = 0.0
+                self.mute_status.configure(text=f'round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            return
+        if self._apply_round_start_gate(now):
+            return
+        if self._apply_clove_ult_gate(now):
+            return
+        if self.strip_detected and (not self.death_muted):
+            current_score = self.api.get_round_score_total()
+            if current_score is not None and self.live_score_total is not None and (current_score != self.live_score_total):
+                previous_score = self.live_score_total
+                self.live_score_total = current_score
+                self._begin_round_start_cooldown(now, previous_score, current_score)
+                self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+                return
+            if self.strip_ignore_until_clear:
+                return
+            if self.strip_enable_armed_ts > 0 and now - self.strip_enable_armed_ts <= self.strip_enable_grace_seconds:
+                self.strip_ignore_until_clear = True
+                self.strip_startup_ignore_active = True
+                self.strip_startup_score_total = None
+                self.strip_startup_clear_since = None
+                self.round_start_cooldown_until = 0.0
+                self.round_start_requires_clear = False
+                self.round_start_clear_since = None
+                self.last_score_poll_ts = 0.0
+                self.mute_status.configure(text='waiting for report clear', fg='#d29922')
+                return
+            clove_ult_recently_ready = self.clove_ult_detected or now - self.clove_ult_last_ready_ts <= self.clove_ult_ready_grace_seconds
+            if self._is_current_agent_clove() and clove_ult_recently_ready:
+                self.clove_ult_pending_until = now + self.clove_ult_pending_seconds
+                self.clove_ult_pending_score_total = current_score
+                self.last_score_poll_ts = 0.0
+                self.mute_status.configure(text=f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s', fg='#d29922')
+                return
+            if self._engage_death_mute() > 0:
+                self.strip_enable_armed_ts = 0.0
+                self.score_total_at_mute = self.api.get_round_score_total()
+                self.last_score_poll_ts = time.time()
+                if self.score_total_at_mute is None:
+                    self.mute_status.configure(text='muted whole game; waiting for live score', fg='#f85149')
+                else:
+                    self.mute_status.configure(text=f'muted whole game; waiting for score change from {self.score_total_at_mute}', fg='#f85149')
+            return
+        if not self.strip_detected and self.strip_ignore_until_clear:
+            self.strip_ignore_until_clear = False
+            self.strip_enable_armed_ts = 0.0
+            if not self.death_muted:
+                self.mute_status.configure(text='armed (strip detection)', fg='#3fb950')
+            return
+        if self.death_muted:
+            score_status, baseline_score, current_score = self._poll_score_delta(self.score_total_at_mute)
+            if score_status == 'wait':
+                return
+            if score_status == 'baseline':
+                self.score_total_at_mute = baseline_score
+                if current_score is not None:
+                    self.mute_status.configure(text=f'muted whole game; waiting for score change from {current_score}', fg='#f85149')
+                return
+            if score_status == 'changed':
+                self._begin_round_start_cooldown(previous_score=baseline_score, current_score=current_score)
+                if self._release_death_mute() <= 0:
+                    return
+                self.score_total_at_mute = None
+                self.strip_enable_armed_ts = 0.0
+                status_text = f'death mute released; manual mute still on; cooldown {int(self.round_start_cooldown_seconds)}s' if self.manual_muted else f'unmuted; round-start cooldown {int(self.round_start_cooldown_seconds)}s'
+                self.mute_status.configure(text=status_text, fg='#d29922')
+
+    def _sync_target_mute(self) -> int:
+        return 1 if mute_valorant(self.death_muted or self.manual_muted) else 0
+
+    def _engage_death_mute(self) -> int:
+        self.death_muted = True
+        if self._sync_target_mute() > 0:
+            return 1
+        self.death_muted = False
+        return 0
+
+    def _release_death_mute(self) -> int:
+        self.death_muted = False
+        return self._sync_target_mute()
 
     def on_drag_start(self, event):
         self._drag_data['x'] = event.x_root - self.root.winfo_x()
@@ -193,6 +1247,8 @@ class DecypherOverlay:
         self.root.geometry(f'+{x}+{y}')
 
     def toggle_visibility(self):
+        if self.binding_capture:
+            return
         if not self.visible and (not self.in_match):
             return
         self.visible = not self.visible
@@ -202,316 +1258,230 @@ class DecypherOverlay:
             self.root.withdraw()
 
     def toggle_click_through(self, event=None):
+        if self.binding_capture:
+            return
         self.click_through = not self.click_through
-        if self.click_through:
-            self.pin_btn.configure(fg='#58a6ff')
-            self.root.attributes('-alpha', 0.6)
-        else:
-            self.pin_btn.configure(fg='#8b949e')
-            self.root.attributes('-alpha', 0.92)
+        self.click_through_btn.configure(fg='#58a6ff' if self.click_through else '#8b949e')
+        self.root.attributes('-alpha', 0.6 if self.click_through else 0.92)
         self._apply_overlay_styles()
 
     def _apply_overlay_styles(self):
-        """Keep overlay from taking focus, and optionally pass mouse through."""
         if not WINDOWS:
             return
         try:
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
-            if self.click_through:
+            style |= WS_EX_TOOLWINDOW
+            if self.binding_capture:
+                style &= ~WS_EX_NOACTIVATE
+                style &= ~WS_EX_TRANSPARENT
+            else:
+                style |= WS_EX_NOACTIVATE
+            if self.click_through and (not self.binding_capture):
                 style |= WS_EX_TRANSPARENT
             else:
                 style &= ~WS_EX_TRANSPARENT
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-        except:
+        except Exception:
             pass
 
     def hotkey_listener(self):
         if not WINDOWS:
             return
-        user32 = ctypes.windll.user32
+        user32_local = ctypes.windll.user32
         while self.running:
             try:
-                if user32.GetAsyncKeyState(113) & 32768:
+                if self.binding_capture:
+                    time.sleep(0.05)
+                    continue
+                if self._hotkey_is_pressed(self.hide_show_hotkey, user32_local):
                     self.root.after(0, self.toggle_visibility)
                     time.sleep(0.3)
-                if user32.GetAsyncKeyState(114) & 32768:
+                if self._hotkey_is_pressed(self.click_through_hotkey, user32_local):
                     self.root.after(0, self.toggle_click_through)
                     time.sleep(0.3)
+                if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.mute_on_death_hotkey, user32_local):
+                    self.root.after(0, self.toggle_death_mute)
+                    time.sleep(0.3)
+                if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.manual_mute_hotkey, user32_local):
+                    self.root.after(0, self.toggle_manual_mute)
+                    time.sleep(0.3)
                 time.sleep(0.05)
-            except:
+            except Exception:
                 pass
 
     def auto_show(self):
         if not self.visible:
             self.visible = True
             self.root.after(0, self.root.deiconify)
-            self.root.after(30, self._apply_overlay_styles)
 
     def auto_hide(self):
-        if self.visible and (not self.click_through):
+        if self.visible:
             self.visible = False
             self.root.after(0, self.root.withdraw)
 
-    def show_agent_select(self):
+    def ensure_agent_select_overlay(self):
         if self.agent_overlay is None:
-            self.agent_overlay = AgentSelectOverlay(self.api)
-        self.root.after(0, self.agent_overlay.show)
+            self.agent_overlay = AgentSelectOverlay(self.api, master=self.root)
+        return self.agent_overlay
+
+    def show_agent_select(self):
+        overlay = self.ensure_agent_select_overlay()
+        self.root.after(0, overlay.show)
 
     def hide_agent_select(self):
         if self.agent_overlay:
             self.root.after(0, self.agent_overlay.hide)
 
-    def clear_players(self):
-        for widget in self.player_frame.winfo_children():
-            widget.destroy()
-
-    def add_team_header(self, text: str, is_enemy: bool=False):
-        header_frame = tk.Frame(self.player_frame, bg='#0d1117')
-        header_frame.pack(fill='x', pady=(10, 4))
-        color = '#f85149' if is_enemy else '#58a6ff'
-        label = tk.Label(header_frame, text=text, font=('Segoe UI', 9, 'bold'), fg=color, bg='#0d1117', anchor='w')
-        label.pack(side='left', padx=(10, 0))
-        peak_header = tk.Label(header_frame, text='PEAK', font=('Segoe UI', 7), fg='#8b949e', bg='#0d1117', width=6)
-        peak_header.pack(side='right', padx=(0, 14))
-        current_header = tk.Label(header_frame, text='CURRENT', font=('Segoe UI', 7), fg='#8b949e', bg='#0d1117', width=8)
-        current_header.pack(side='right', padx=(0, 6))
-
-    def add_player(self, puuid: str, name: str, current_rank: str, peak_rank: str, is_local: bool=False, party_color: str=None):
-        frame = tk.Frame(self.player_frame, bg='#161b22', cursor='hand2')
-        frame.pack(fill='x', pady=1)
-        self.player_data[puuid] = {'name': name, 'current': current_rank, 'peak': peak_rank}
-        if party_color:
-            party_bar = tk.Frame(frame, bg=party_color, width=4)
-            party_bar.pack(side='left', fill='y')
-            party_bar.pack_propagate(False)
-        name_color = '#58a6ff' if is_local else '#c9d1d9'
-        name_label = tk.Label(frame, text=name, font=('Segoe UI', 9), fg=name_color, bg='#161b22', anchor='w', cursor='hand2')
-        name_label.pack(side='left', padx=(10 if not party_color else 6, 0), pady=3)
-        peak_label = tk.Label(frame, bg='#161b22', width=24, height=24)
-        peak_label.pack(side='right', padx=(0, 10), pady=3)
-        self._set_rank_icon(peak_label, peak_rank)
-        current_label = tk.Label(frame, bg='#161b22', width=24, height=24)
-        current_label.pack(side='right', padx=(0, 16), pady=3)
-        self._set_rank_icon(current_label, current_rank)
-        widgets = [frame, name_label, current_label, peak_label]
-
-        def on_enter(e):
-            for w in widgets:
-                w.configure(bg='#21262d')
-
-        def on_leave(e):
-            for w in widgets:
-                w.configure(bg='#161b22')
-        for w in [frame, name_label]:
-            w.bind('<Enter>', on_enter)
-            w.bind('<Leave>', on_leave)
-            w.bind('<Button-1>', lambda e, n=name: self.open_tracker_profile(n))
-
-    def _set_rank_icon(self, label, rank_name: str):
-        """Set rank icon on label, loading async if needed"""
-        if not PIL_AVAILABLE:
-            label.configure(text=rank_name[:3], font=('Segoe UI', 7), fg=self.get_rank_color(rank_name))
+    def destroy_agent_select(self):
+        if not self.agent_overlay:
             return
-        tier = self.RANK_TIERS.get(rank_name, 0)
-        if tier in self.rank_icons:
-            label.configure(image=self.rank_icons[tier], width=24, height=24)
-            label.image = self.rank_icons[tier]
-        else:
+        overlay = self.agent_overlay
+        self.agent_overlay = None
+        self.root.after(0, overlay.close)
 
-            def load():
-                try:
-                    url = f'https://media.valorant-api.com/competitivetiers/{self.COMP_TIER_UUID}/{tier}/smallicon.png'
-                    with urllib.request.urlopen(url, timeout=5) as resp:
-                        data = resp.read()
-                        img = Image.open(io.BytesIO(data)).resize((24, 24), Image.LANCZOS)
-                        photo = ImageTk.PhotoImage(img)
-                        self.rank_icons[tier] = photo
-                        self.root.after(0, lambda: self._apply_icon(label, photo))
-                except:
-                    pass
-            threading.Thread(target=load, daemon=True).start()
+    def _ensure_agent_catalog_loading(self):
+        if self.agent_catalog_load_started:
+            return
+        self.agent_catalog_load_started = True
 
-    def _apply_icon(self, label, photo):
-        try:
-            label.configure(image=photo, width=24, height=24)
-            label.image = photo
-        except:
-            pass
+        def load_catalog():
+            self.api.load_agent_catalog_once()
+            self.root.after(0, self._preload_agent_select_overlay)
+        threading.Thread(target=load_catalog, daemon=True).start()
 
-    def get_rank_color(self, rank: str) -> str:
-        r = rank.lower()
-        if 'radiant' in r:
-            return '#fffb8a'
-        if 'immortal' in r:
-            return '#ff5551'
-        if 'ascendant' in r:
-            return '#3fb950'
-        if 'diamond' in r:
-            return '#a78bfa'
-        if 'platinum' in r:
-            return '#22d3ee'
-        if 'gold' in r:
-            return '#fbbf24'
-        if 'silver' in r:
-            return '#9ca3af'
-        if 'bronze' in r:
-            return '#d97706'
-        if 'iron' in r:
-            return '#78716c'
-        return '#8b949e'
-
-    def open_tracker_profile(self, name: str):
-        if '#' in name:
-            g, t = name.split('#', 1)
-            url = f'https://tracker.gg/valorant/profile/riot/{urllib.parse.quote(g)}%23{urllib.parse.quote(t)}/overview'
-            webbrowser.open(url)
+    def _preload_agent_select_overlay(self):
+        if self.in_match and (not self.in_pregame):
+            return
+        overlay = self.ensure_agent_select_overlay()
+        overlay._refresh_agent_grid()
+        overlay.preload_agent_images()
 
     def update_status(self, text: str):
         self.root.after(0, lambda: self.status_label.configure(text=text))
 
-    def update_display(self, players: list, names: dict, current_ranks: dict, peak_ranks: dict, parties: dict, game_state: str):
+    def update_presence_panel(self, game_state: str, source: str):
+        self.current_game_state = game_state
+        title = game_state if source != 'none' else 'Waiting for Valorant...'
+        self.root.after(0, lambda: self.status_label.configure(text=title))
 
-        def update():
-            self.status_label.configure(text=game_state)
-            self.clear_players()
-            allies, enemies = self._split_players(players, game_state)
-            party_color_map = {}
-            party_counts = {}
-            for puuid, party_id in parties.items():
-                party_counts[party_id] = party_counts.get(party_id, 0) + 1
-            color_idx = 0
-            for party_id, count in party_counts.items():
-                if count >= 2:
-                    party_color_map[party_id] = self.PARTY_COLORS[color_idx % len(self.PARTY_COLORS)]
-                    color_idx += 1
-
-            def get_party_color(puuid):
-                party_id = parties.get(puuid)
-                if party_id:
-                    return party_color_map.get(party_id)
-                return None
-            if game_state == 'Deathmatch' and len(allies) == 1:
-                self.add_team_header('YOU', is_enemy=False)
-                for p in allies:
-                    puuid = p.get('puuid')
-                    self.add_player(puuid, names.get(puuid, 'Unknown'), current_ranks.get(puuid, '?'), peak_ranks.get(puuid, '-'), True, None)
-                self.add_team_header('ENEMIES', is_enemy=True)
-                for p in enemies:
-                    puuid = p.get('puuid')
-                    self.add_player(puuid, names.get(puuid, 'Unknown'), current_ranks.get(puuid, '?'), peak_ranks.get(puuid, '-'), False, get_party_color(puuid))
-            else:
-                if allies:
-                    self.add_team_header('YOUR TEAM', is_enemy=False)
-                    for p in allies:
-                        puuid = p.get('puuid')
-                        self.add_player(puuid, names.get(puuid, 'Unknown'), current_ranks.get(puuid, '?'), peak_ranks.get(puuid, '-'), p.get('is_local', False), get_party_color(puuid))
-                if enemies:
-                    self.add_team_header('ENEMY TEAM', is_enemy=True)
-                    for p in enemies:
-                        puuid = p.get('puuid')
-                        self.add_player(puuid, names.get(puuid, 'Unknown'), current_ranks.get(puuid, '?'), peak_ranks.get(puuid, '-'), False, get_party_color(puuid))
-                elif allies and len(allies) >= 8:
-                    self.status_label.configure(text=f'{game_state} (team data limited)')
-        self.root.after(0, update)
+    def sync_agent_select_from_players(self, players: list):
+        if not self.agent_overlay:
+            return
+        overlay = self.agent_overlay
+        local_player = next((player for player in players if player.get('is_local')), None)
+        if not local_player:
+            return
+        agent_id = local_player.get('agent')
+        if agent_id:
+            self.current_agent_id = agent_id
+            self.current_agent_name = self.api.get_agent_name(agent_id)
+        selection_state = local_player.get('selection_state')
+        self.root.after(0, lambda o=overlay, a=agent_id, s=selection_state: o.sync_from_game(a, s))
 
     def update_loop(self):
-        last_players = []
-        print('[DEBUG] update_loop entering main cycle')
         while self.running:
             try:
-                if not self.api.is_game_running():
-                    print('[DEBUG] Valorant not running / lockfile missing')
-                    if self.in_match or self.visible:
-                        self.in_match = False
-                        self.in_pregame = False
-                        self.auto_hide()
-                        self.hide_agent_select()
+                if not self.api.is_game_running() or not self.api.connect():
+                    self._set_inactive_state()
                     time.sleep(2)
                     continue
-                if not self.api.connect():
-                    print('[DEBUG] Failed to connect to local API')
-                    if self.in_match or self.visible:
-                        self.in_match = False
-                        self.in_pregame = False
-                        self.auto_hide()
-                        self.hide_agent_select()
-                    time.sleep(2)
+                self._ensure_agent_catalog_loading()
+                players, game_state, source = self.get_match_players()
+                self.update_presence_panel(game_state, source)
+                if source == 'pregame':
+                    if not self.in_match:
+                        self.in_match = True
+                        self.auto_show()
+                    if not self.in_pregame:
+                        self.in_pregame = True
+                        self.show_agent_select()
+                    self.sync_agent_select_from_players(players)
+                    time.sleep(1)
                     continue
-                print('[DEBUG] Connected to local API')
-                players, game_state = self.get_match_players()
-                print(f'[DEBUG] match players count={len(players)} game_state={game_state}')
-                self.check_death_mute(game_state)
-                if not players:
-                    print('[DEBUG] no players detected; overlay stays hidden')
-                    if self.in_match or self.visible:
-                        self.in_match = False
+                if source == 'coregame':
+                    if not self.in_match:
+                        self.in_match = True
+                        self.auto_show()
+                    if self.in_pregame:
                         self.in_pregame = False
-                        self.auto_hide()
-                        self.hide_agent_select()
-                    time.sleep(3)
+                        self.destroy_agent_select()
+                    time.sleep(1)
                     continue
-                if not self.in_match:
-                    self.in_match = True
-                    self.auto_show()
-                is_pregame = game_state == 'Agent Select'
-                if is_pregame and (not self.in_pregame):
-                    self.in_pregame = True
-                    self.show_agent_select()
-                elif not is_pregame and self.in_pregame:
-                    self.in_pregame = False
-                    self.hide_agent_select()
-                current_puuids = sorted([p['puuid'] for p in players])
-                if current_puuids != last_players:
-                    last_players = current_puuids
-                    puuids = [p['puuid'] for p in players]
-                    names = self.api.get_player_names(puuids)
-                    current_ranks, peak_ranks = self.api.get_player_ranks(puuids)
-                    parties = self.api.get_party_members()
-                    self.update_display(players, names, current_ranks, peak_ranks, parties, game_state)
-                time.sleep(1)
-            except Exception as e:
-                self.update_status(f'Error: {str(e)[:25]}')
+                self._set_inactive_state()
+                self.root.after(0, self._preload_agent_select_overlay)
+                time.sleep(3)
+            except Exception as exc:
+                self.update_status(f'Error: {str(exc)[:25]}')
                 time.sleep(3)
 
-    def get_match_players(self) -> tuple[list, str]:
-        players = []
-        game_state = 'Menu'
+    def _set_inactive_state(self):
+        if self.in_match or self.in_pregame:
+            self.in_match = False
+            self.in_pregame = False
+            self.destroy_agent_select()
+            self.current_agent_id = None
+            self.current_agent_name = None
+            self.clove_ult_pending_until = 0.0
+            self.clove_ult_pending_score_total = None
+            self.clove_ult_detected = False
+            self._hide_clove_ult_outline()
+        if self.visible and (not self.tray_forced_visible):
+            self.auto_hide()
+        self.update_presence_panel('Menu', 'none')
+
+    def get_match_players(self) -> tuple[list, str, str]:
         coregame = self.api.get_coregame_match()
         if coregame:
-            self.current_match_id = coregame.get('MatchID')
-            game_state = coregame.get('ModeID', 'In Game')
-            if 'deathmatch' in game_state.lower():
-                game_state = 'Deathmatch'
-            elif 'competitive' in game_state.lower():
-                game_state = 'Competitive'
-            elif 'unrated' in game_state.lower():
-                game_state = 'Unrated'
-            else:
-                game_state = 'In Game'
-            for player in coregame.get('Players', []):
-                players.append({'puuid': player.get('Subject'), 'team': player.get('TeamID'), 'agent': player.get('CharacterID'), 'is_local': player.get('Subject') == self.api.puuid})
-            return (players, game_state)
+            mode = coregame.get('ModeID', 'In-game')
+            self.current_mode_id = str(mode or '')
+            game_state = self._display_game_state(mode)
+            local_agent_id = None
+            players = [{'puuid': player.get('Subject'), 'team': player.get('TeamID'), 'agent': player.get('CharacterID'), 'is_local': player.get('Subject') == self.api.puuid} for player in coregame.get('Players', [])]
+            for player in players:
+                if player.get('is_local'):
+                    local_agent_id = player.get('agent')
+                    break
+            if local_agent_id:
+                self.current_agent_id = local_agent_id
+                self.current_agent_name = self.api.get_agent_name(local_agent_id)
+            return (players, game_state, 'coregame')
         pregame = self.api.get_pregame_match()
         if pregame:
-            self.current_match_id = None
-            game_state = 'Agent Select'
+            self.current_mode_id = ''
             ally_team = pregame.get('AllyTeam', {}).get('Players', [])
-            for player in ally_team:
-                players.append({'puuid': player.get('Subject'), 'team': 'ally', 'agent': player.get('CharacterID'), 'is_local': player.get('Subject') == self.api.puuid})
-            return (players, game_state)
-        self.current_match_id = None
-        return (players, game_state)
+            players = [{'puuid': player.get('Subject'), 'team': 'ally', 'agent': player.get('CharacterID'), 'selection_state': player.get('CharacterSelectionState'), 'is_local': player.get('Subject') == self.api.puuid} for player in ally_team]
+            return (players, 'Agent Select', 'pregame')
+        self.current_mode_id = ''
+        return ([], 'Menu', 'none')
+
+    def _display_game_state(self, mode_id: str) -> str:
+        mode = (mode_id or '').lower()
+        if 'deathmatch' in mode:
+            return 'Deathmatch'
+        if 'competitive' in mode:
+            return 'Competitive'
+        if 'unrated' in mode:
+            return 'Unrated'
+        return 'In-game'
 
     def close(self):
-        if self.muted_by_us:
+        self._remove_tray_icon()
+        self._hide_clove_ult_outline()
+        if self.death_muted or self.manual_muted:
+            self.death_muted = False
+            self.manual_muted = False
             mute_valorant(False)
         self.running = False
         self.root.quit()
         self.root.destroy()
 
     def run(self):
+        signal.signal(signal.SIGINT, lambda *_: self.root.destroy())
+        self.root.after(200, self._check_signal)
         self.root.mainloop()
+
+    def _check_signal(self):
+        self.root.after(200, self._check_signal)
 if __name__ == '__main__':
     DecypherOverlay().run()

@@ -1,29 +1,70 @@
 # Decypher
-Lightweight Valorant overlay that reveals hidden player IGNs and current/peak ranks
 
-## Features
-- Shows all players' current & peak rank
-- Party indicators
-- Auto-shows on match start, auto-hides on match end
-- Agent select overlay with instalock & dodge
-- Mute on Death: mutes game when you die, unmutes next round
-- Click name to open Tracker.gg profile
+Lightweight Valorant overlay focused on two features:
 
-## Installation
+- Agent select actions: select, instalock, and dodge.
+- Mute on Death: mute the whole Valorant audio session when the death strip is detected, then unmute when the live round score changes.
 
-### Option 1: Download
-1. Download `Decypher.zip` from releases
-2. Extract anywhere
-3. Run `install_exe.bat`
+Decypher does not resolve hidden IGNs, ranks, peak ranks, or party data.
 
-Runs automatically on Windows startup
+## Requirements
 
-### Option 2: Python
-Clone repo & run `install.bat` in directory
+- Windows
+- Valorant in borderless windowed mode
+- Python 3.10+ for source installs
 
-## Notes
-Only works in **borderless windowed** mode
+## Run From Source
+
+```powershell
+pip install -r requirements.txt
+python overlay.py
+```
+
+Or use:
+
+```bat
+install.bat
+```
+
+## Build
+
+```powershell
+python -m PyInstaller decypher.spec --noconfirm
+```
+
+The executable is written to `dist\decypher.exe`.
+
+## Install Built EXE
+
+After building or downloading a release package, run:
+
+```bat
+install_exe.bat
+```
+
+## Controls
+
+- `Mute on Death`: arms or disables strip-based mute automation.
+- `F2`: toggle overlay visibility while in match.
+- `F3`: toggle click-through mode.
+- `Esc`: close the overlay.
+
+## Behavior
+
+When `Mute on Death` is enabled, Decypher samples a narrow fixed strip of the Valorant window. A matching death-strip color mutes the Valorant audio session. While muted, Decypher polls the local presence score and unmutes when the total score changes.
+
+If the death strip is already detected when `Mute on Death` is enabled, Decypher treats that as an existing death state, does not mute, waits for the next score change, then applies a 25 second round-start cooldown before arming again.
 
 ## Uninstall
-Run `uninstall.bat` or delete the shortcut from:
-`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`
+
+Run:
+
+```bat
+uninstall.bat
+```
+
+Or delete the Decypher shortcut from:
+
+```text
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+```
