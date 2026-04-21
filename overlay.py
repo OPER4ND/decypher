@@ -93,7 +93,7 @@ if WINDOWS:
     user32.CreatePopupMenu.restype = wintypes.HMENU
 _STRIP_X_REGIONS = ((0.8875, 0.9225),)
 _STRIP_Y_MIN = 0.27
-_STRIP_Y_MAX = 0.56
+_STRIP_Y_MAX = 0.502
 _STRIP_RGB = (240, 49, 86)
 _STRIP_TOLERANCE = 24
 _STRIP_H_RATIO = 0.68
@@ -164,7 +164,7 @@ class DecypherOverlay:
         self.mute_arm_grace_seconds = 0.75
         self.score_total_at_mute = None
         self.last_score_poll_ts = 0.0
-        self.score_poll_interval_muted = 0.25
+        self.score_poll_interval_muted = 1.0
         self.live_score_total = None
         self.last_live_score_poll_ts = 0.0
         self.live_score_poll_interval = 0.5
@@ -189,6 +189,8 @@ class DecypherOverlay:
         self._log_tailer_thread = None
         self._strip_outline_wins = {}
         self._strip_outline_bbox = None
+        self._strip_outline_last_state = None
+        self._strip_outline_visible = False
         self.menu_button_detected = False
         self.last_menu_button_seen_ts = 0.0
         self._valorant_hwnd = None
@@ -214,7 +216,7 @@ class DecypherOverlay:
         self.click_through_btn = tk.Label(btn_frame, text='🖱', font=(self.FONT_FAMILY, 12), fg='#8b949e', bg='#161b22', cursor='hand2')
         self.click_through_btn.pack(side='left', padx=4)
         self.click_through_btn.bind('<Button-1>', self.toggle_click_through)
-        close_btn = tk.Label(btn_frame, text='✕', font=(self.FONT_FAMILY, 13), fg='#8b949e', bg='#161b22', cursor='hand2')
+        close_btn = tk.Label(btn_frame, text='X', font=(self.FONT_FAMILY, 13), fg='#8b949e', bg='#161b22', cursor='hand2')
         close_btn.pack(side='left', padx=4)
         close_btn.bind('<Button-1>', lambda _event: self.close())
         close_btn.bind('<Enter>', lambda _event: close_btn.configure(fg='#f85149'))
@@ -735,6 +737,10 @@ class DecypherOverlay:
     def _show_strip_outline(self, bbox, detected):
         if not self._strip_outline_wins:
             return
+        color = self._OUTLINE_HIT if detected else self._OUTLINE_MISS
+        state = (bbox, color)
+        if self._strip_outline_visible and self._strip_outline_last_state == state:
+            return
         x0, y0, x1, y1 = bbox
         ox0 = x0 - self._OUTLINE_PAD
         oy0 = y0 - self._OUTLINE_PAD
@@ -743,7 +749,6 @@ class DecypherOverlay:
         W = max(1, ox1 - ox0)
         H = max(1, oy1 - oy0)
         T = self._OUTLINE_THICKNESS
-        color = self._OUTLINE_HIT if detected else self._OUTLINE_MISS
         geoms = {'top': (ox0, oy0 - T, W, T), 'bottom': (ox0, oy1, W, T), 'left': (ox0 - T, oy0, T, H), 'right': (ox1, oy0, T, H)}
         for side, (x, y, w, h) in geoms.items():
             win = self._strip_outline_wins[side]
@@ -751,10 +756,16 @@ class DecypherOverlay:
             win.geometry(f'{w}x{h}+{x}+{y}')
             win.deiconify()
             win.lift()
+        self._strip_outline_last_state = state
+        self._strip_outline_visible = True
 
     def _hide_strip_outline(self):
+        if not self._strip_outline_visible:
+            return
         for win in self._strip_outline_wins.values():
             win.withdraw()
+        self._strip_outline_visible = False
+        self._strip_outline_last_state = None
 
     def _build_menu_button_bbox(self, rect):
         left, top, right, bottom = rect
@@ -863,16 +874,21 @@ class DecypherOverlay:
                     continue
                 with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
                     f.seek(0, 2)
+                    idle_ticks = 0
                     while not self._log_tailer_stop.is_set():
                         line = f.readline()
                         if not line:
-                            try:
-                                if os.path.getsize(log_path) < f.tell():
+                            idle_ticks += 1
+                            if idle_ticks >= 40:
+                                idle_ticks = 0
+                                try:
+                                    if os.path.getsize(log_path) < f.tell():
+                                        break
+                                except OSError:
                                     break
-                            except OSError:
-                                break
                             self._log_tailer_stop.wait(0.05)
                             continue
+                        idle_ticks = 0
                         if _LOG_DEATH_RE.search(line):
                             self.root.after(0, self._on_log_death)
                         elif _LOG_REVIVAL_RE.search(line):

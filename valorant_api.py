@@ -17,6 +17,9 @@ except ImportError:
     AUDIO_AVAILABLE = False
 
 
+_cached_volume = None
+
+
 def _is_valorant_audio_process(session) -> bool:
     process = getattr(session, "Process", None)
     if not process:
@@ -30,19 +33,37 @@ def _is_valorant_audio_process(session) -> bool:
     return name == "valorant-win64-shipping.exe"
 
 
+def _get_valorant_volume():
+    global _cached_volume
+    if _cached_volume is not None:
+        try:
+            _cached_volume.GetMute()  # probe — raises if handle is stale
+            return _cached_volume
+        except Exception:
+            _cached_volume = None
+
+    try:
+        for session in AudioUtilities.GetAllSessions():
+            if _is_valorant_audio_process(session):
+                _cached_volume = session._ctl.QueryInterface(ISimpleAudioVolume)
+                return _cached_volume
+    except Exception:
+        pass
+    return None
+
+
 def mute_valorant(mute: bool = True) -> bool:
     """Mute or unmute the VALORANT audio session in the Windows volume mixer."""
     if not AUDIO_AVAILABLE:
         return False
 
     try:
-        for session in AudioUtilities.GetAllSessions():
-            if _is_valorant_audio_process(session):
-                volume = session._ctl.QueryInterface(ISimpleAudioVolume)
-                volume.SetMute(1 if mute else 0, None)
-                return True
+        volume = _get_valorant_volume()
+        if volume:
+            volume.SetMute(1 if mute else 0, None)
+            return True
     except Exception:
-        return False
+        _cached_volume = None
     return False
 
 
@@ -121,6 +142,9 @@ class ValorantLocalAPI:
         "Vyse": "efba5359-4016-a1e5-7626-b1ae76895940",
     }
 
+    _CLIENT_VERSION_TTL  = 3600.0   # re-fetch at most once per hour
+    _REMOTE_HEADERS_TTL  = 60.0    # access token valid for minutes; refresh every 60s
+
     def __init__(self):
         self.session = requests.Session()
         self.session.trust_env = False
@@ -142,15 +166,26 @@ class ValorantLocalAPI:
         self.agent_catalog_source = "fallback"
         self.agent_catalog = self._build_agent_catalog_from_map(self.AGENTS, self.FALLBACK_AGENT_ROLES)
         self.agents_by_name = dict(self.AGENTS)
+        self.agents_by_uuid = {v.lower(): k for k, v in self.AGENTS.items()}
+
+        self._lockfile_mtime = None
+        self._client_version_cache = None
+        self._client_version_ts = 0.0
+        self._remote_headers_cache = None
+        self._remote_headers_ts = 0.0
 
     def is_game_running(self) -> bool:
         return os.path.exists(self.lockfile_path)
 
     def connect(self) -> bool:
         if not self.is_game_running():
+            self._lockfile_mtime = None
             return False
 
         try:
+            mtime = os.path.getmtime(self.lockfile_path)
+            if self.base_url and self.puuid and mtime == self._lockfile_mtime:
+                return True  # already connected, lockfile unchanged
             with open(self.lockfile_path, "r", encoding="utf-8") as lockfile:
                 data = lockfile.read().split(":")
             self.port = data[2]
@@ -161,9 +196,12 @@ class ValorantLocalAPI:
                 "Authorization": f"Basic {auth}",
                 "Content-Type": "application/json",
             }
+            self._lockfile_mtime = mtime
+            self._remote_headers_cache = None  # force token refresh on reconnect
             self._get_local_player_info()
             return True
         except Exception:
+            self._lockfile_mtime = None
             return False
 
     def _agent_icon_url(self, agent_id: str) -> str:
@@ -249,6 +287,7 @@ class ValorantLocalAPI:
                 self.agent_catalog = catalog
                 self.agent_catalog_source = catalog["source"]
                 self.agents_by_name = dict(catalog["agents_by_name"])
+                self.agents_by_uuid = {v.lower(): k for k, v in self.agents_by_name.items()}
                 return self.agent_catalog
         except Exception:
             pass
@@ -256,6 +295,7 @@ class ValorantLocalAPI:
         self.agent_catalog_source = "fallback"
         self.agent_catalog = self._build_agent_catalog_from_map(self.AGENTS, self.FALLBACK_AGENT_ROLES)
         self.agents_by_name = dict(self.AGENTS)
+        self.agents_by_uuid = {v.lower(): k for k, v in self.AGENTS.items()}
         return self.agent_catalog
 
     def get_agent_catalog(self) -> dict:
@@ -267,15 +307,7 @@ class ValorantLocalAPI:
     def get_agent_name(self, agent_id: str) -> str | None:
         if not agent_id:
             return None
-
-        needle = str(agent_id).lower()
-        for name, uuid in self.agents_by_name.items():
-            if str(uuid).lower() == needle:
-                return name
-        for name, uuid in self.AGENTS.items():
-            if str(uuid).lower() == needle:
-                return name
-        return None
+        return self.agents_by_uuid.get(str(agent_id).lower())
 
     def _request(self, endpoint: str, method: str = "GET") -> dict | None:
         if not self.base_url or not self.headers:
@@ -306,6 +338,11 @@ class ValorantLocalAPI:
         return None
 
     def _get_remote_headers(self) -> dict:
+        import time
+        now = time.time()
+        if self._remote_headers_cache and (now - self._remote_headers_ts) < self._REMOTE_HEADERS_TTL:
+            return self._remote_headers_cache
+
         entitlements = self._request("/entitlements/v1/token") or {}
         access_token = entitlements.get("accessToken", "")
         inferred_shard = self._extract_shard_from_access_token(access_token)
@@ -314,22 +351,33 @@ class ValorantLocalAPI:
             if not self.region or self.region == "na":
                 self.region = inferred_shard
 
-        return {
+        headers = {
             "Authorization": f"Bearer {access_token}",
             "X-Riot-Entitlements-JWT": entitlements.get("token", ""),
             "X-Riot-ClientPlatform": "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9",
             "X-Riot-ClientVersion": self._get_client_version(),
             "Content-Type": "application/json",
         }
+        self._remote_headers_cache = headers
+        self._remote_headers_ts = now
+        return headers
 
     def _get_client_version(self) -> str:
+        import time
+        now = time.time()
+        if self._client_version_cache and (now - self._client_version_ts) < self._CLIENT_VERSION_TTL:
+            return self._client_version_cache
         try:
             response = self.session.get("https://valorant-api.com/v1/version", timeout=5)
             if response.status_code == 200:
-                return response.json()["data"]["riotClientVersion"]
+                version = response.json()["data"]["riotClientVersion"]
+                self._client_version_cache = version
+                self._client_version_ts = now
+                return version
         except Exception:
             pass
-        return "release-09.00-shipping-27-2548652"
+        # Return stale cache if available rather than the hardcoded fallback
+        return self._client_version_cache or "release-09.00-shipping-27-2548652"
 
     def _get_local_player_info(self):
         session = self._request("/chat/v1/session")

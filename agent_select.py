@@ -49,6 +49,7 @@ class AgentSelectOverlay:
                 pass
 
         self._position_window()
+        self.root.after(100, self._apply_no_activate)
 
         # === HEADER ===
         header = tk.Frame(self.root, bg="#161b22")
@@ -64,7 +65,7 @@ class AgentSelectOverlay:
         title.pack(side="left")
 
         close_btn = tk.Label(
-            title_row, text="✕", font=(self.FONT_FAMILY, 13),
+            title_row, text="X", font=(self.FONT_FAMILY, 13),
             fg="#8b949e", bg="#161b22", cursor="hand2"
         )
         close_btn.pack(side="right", padx=4)
@@ -148,6 +149,20 @@ class AgentSelectOverlay:
 
         # Hotkeys
         self.root.bind("<Escape>", lambda e: self.hide())
+
+    def _apply_no_activate(self):
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_EX_TOOLWINDOW = 0x80
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetParent(self.root.winfo_id())
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception:
+            pass
 
     def _position_window(self):
         """Position on the primary screen, top-center."""
@@ -463,6 +478,7 @@ class AgentSelectOverlay:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
+        self.root.after(50, self._apply_no_activate)
 
     def hide(self):
         if self.visible:
