@@ -15,9 +15,13 @@ def setup_startup():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     vbs_path = os.path.join(startup_folder(), "run_decypher.vbs")
 
+    pythonw = os.path.join(script_dir, "venv", "Scripts", "pythonw.exe")
+    if not os.path.exists(pythonw):
+        pythonw = "pythonw"  # fallback to PATH if no venv
+
     vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = "{script_dir}"
-WshShell.Run "pythonw overlay.py", 0, False
+WshShell.Run "{pythonw} overlay.py", 0, False
 '''
 
     with open(vbs_path, "w") as f:

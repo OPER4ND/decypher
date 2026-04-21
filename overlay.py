@@ -11,6 +11,23 @@ from ctypes import wintypes
 from agent_select import AgentSelectOverlay
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 try:
+    import mss as _mss
+    import numpy as _np
+    _mss_instance = _mss.mss()
+    SCREEN_GRAB_AVAILABLE = True
+
+    def _screen_grab(bbox):
+        x0, y0, x1, y1 = bbox
+        monitor = {'left': x0, 'top': y0, 'width': x1 - x0, 'height': y1 - y0}
+        shot = _mss_instance.grab(monitor)
+        return _np.frombuffer(shot.bgra, dtype=_np.uint8).reshape(shot.height, shot.width, 4)
+except Exception:
+    SCREEN_GRAB_AVAILABLE = False
+    _np = None
+
+    def _screen_grab(bbox):
+        return None
+try:
     import ctypes
     WINDOWS = True
 except ImportError:
@@ -74,6 +91,26 @@ if WINDOWS:
     user32.LoadIconW.restype = wintypes.HICON
     user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
     user32.CreatePopupMenu.restype = wintypes.HMENU
+_STRIP_X_REGIONS = ((0.8875, 0.9225),)
+_STRIP_Y_MIN = 0.27
+_STRIP_Y_MAX = 0.56
+_STRIP_RGB = (240, 49, 86)
+_STRIP_TOLERANCE = 24
+_STRIP_H_RATIO = 0.68
+_STRIP_RUN_ROWS = 24
+_MENU_X_MIN = 0.43
+_MENU_X_MAX = 0.57
+_MENU_Y_MIN = 0.91
+_MENU_Y_MAX = 0.958
+_MENU_GREEN_RGB = (37, 186, 129)
+_MENU_GREEN_TOLERANCE = 70
+_MENU_H_RATIO = 0.18
+_MENU_H_RUN_ROWS = 2
+_MENU_V_RATIO = 0.18
+_MENU_V_RUN_COLS = 2
+_MENU_WHITE_FILL_RATIO = 0.58
+_MENU_WHITE_FILL_ROWS = 18
+_MENU_RECENT_SECONDS = 2.25
 _SHOOTER_GAME_LOG = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'VALORANT', 'Saved', 'Logs', 'ShooterGame.log')
 _LOG_DEATH_RE = re.compile('LogPlayerController:.*AcknowledgePossession\\([\'\\"]?.+_PostDeath_')
 _LOG_REVIVAL_RE = re.compile('LogPlayerController:.*ClientRestart_Implementation.+_PostDeath_')
@@ -150,6 +187,14 @@ class DecypherOverlay:
         self.tray_old_wndproc = None
         self._log_tailer_stop = threading.Event()
         self._log_tailer_thread = None
+        self._strip_outline_wins = {}
+        self._strip_outline_bbox = None
+        self.menu_button_detected = False
+        self.last_menu_button_seen_ts = 0.0
+        self._valorant_hwnd = None
+        self._valorant_rect = None
+        self._cached_strip_bboxes = None
+        self._cached_menu_bbox = None
         self.root = tk.Tk()
         self.root.title('Decypher')
         self.root.attributes('-topmost', True)
@@ -196,6 +241,7 @@ class DecypherOverlay:
         self.root.withdraw()
         if WINDOWS:
             self.root.after(100, self._apply_overlay_styles)
+            self.root.after(120, self._create_strip_outline)
             self.root.after(150, self._create_tray_icon)
             self.root.after(150, self._refresh_death_detection_loop)
             self.root.after(200, self._start_log_tailer)
@@ -533,17 +579,17 @@ class DecypherOverlay:
         if self.death_mute_enabled:
             now = time.time()
             self.mute_armed_ts = now
-            self.revive_gate = self.player_dead
+            menu_recent = self._menu_seen_recently(now)
+            self.revive_gate = bool(self.player_dead or menu_recent)
             self.startup_revive_gate = self.revive_gate
             self.startup_score_baseline = None
             self.startup_revival_since = None
-            self.round_start_cooldown_until = 0.0
-            self.round_start_requires_clear = False
-            self.round_start_clear_since = None
             if self.startup_revive_gate:
                 self.last_score_poll_ts = 0.0
             self.mute_toggle.configure(text='[ x ] Mute on Death', fg='#3fb950')
-            if self.revive_gate:
+            if menu_recent:
+                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+            elif self.revive_gate:
                 self.mute_status.configure(text='waiting for revival', fg='#d29922')
             else:
                 self.mute_status.configure(text='armed', fg='#3fb950')
@@ -558,9 +604,6 @@ class DecypherOverlay:
         self.startup_revival_since = None
         self.clove_ult_pending_until = 0.0
         self.clove_ult_pending_score_total = None
-        self.round_start_cooldown_until = 0.0
-        self.round_start_requires_clear = False
-        self.round_start_clear_since = None
         self.mute_armed_ts = 0.0
         self.score_total_at_mute = None
 
@@ -606,6 +649,206 @@ class DecypherOverlay:
                 pass
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         return (rect.left, rect.top, rect.right, rect.bottom)
+
+    def _find_valorant_window(self):
+        if self._valorant_hwnd and user32.IsWindow(self._valorant_hwnd):
+            return self._valorant_hwnd
+        for hwnd, title in self._enum_visible_windows():
+            if 'valorant' in title.lower():
+                self._valorant_hwnd = hwnd
+                return hwnd
+        self._valorant_hwnd = None
+        return None
+
+    def _build_strip_bbox(self, rect):
+        left, top, right, bottom = rect
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+        if not width or not height:
+            return None
+        y0 = top + int(round(height * _STRIP_Y_MIN))
+        y1 = top + int(round(height * _STRIP_Y_MAX))
+        bboxes = []
+        for xr0, xr1 in _STRIP_X_REGIONS:
+            x0 = left + int(round(width * xr0))
+            x1 = left + int(round(width * xr1))
+            if x1 > x0:
+                bboxes.append((x0, y0, x1, y1))
+        return bboxes or None
+
+    def _analyze_strip_bbox(self, bboxes):
+        if not SCREEN_GRAB_AVAILABLE or not bboxes:
+            return False
+        tr, tg, tb = _STRIP_RGB
+        tol = _STRIP_TOLERANCE
+        row_ok = None
+        for bb in bboxes:
+            arr = _screen_grab(bb)
+            if arr is None:
+                return False
+            h = arr.shape[0]
+            if row_ok is None:
+                row_ok = _np.ones(h, dtype=bool)
+            else:
+                h = min(h, len(row_ok))
+                row_ok = row_ok[:h]
+            r = arr[:h, :, 2].astype(_np.int16)
+            g = arr[:h, :, 1].astype(_np.int16)
+            b = arr[:h, :, 0].astype(_np.int16)
+            red_mask = (_np.abs(r - tr) <= tol) & (_np.abs(g - tg) <= tol) & (_np.abs(b - tb) <= tol)
+            row_ok &= red_mask.mean(axis=1) >= _STRIP_H_RATIO
+        if row_ok is None:
+            return False
+        run = 0
+        for ok in row_ok[::-1]:
+            if ok:
+                run += 1
+                if run >= _STRIP_RUN_ROWS:
+                    return True
+            else:
+                run = 0
+        return False
+    _OUTLINE_HIT = '#39ff14'
+    _OUTLINE_MISS = '#ffbf00'
+    _OUTLINE_THICKNESS = 3
+    _OUTLINE_PAD = 4
+
+    def _create_strip_outline(self):
+        for side in ('top', 'bottom', 'left', 'right'):
+            w = tk.Toplevel(self.root)
+            w.overrideredirect(True)
+            w.attributes('-topmost', True)
+            w.configure(bg=self._OUTLINE_MISS)
+            w.withdraw()
+            self._strip_outline_wins[side] = w
+            w.after(120, lambda win=w: self._make_passthrough(win))
+
+    def _make_passthrough(self, win):
+        try:
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception:
+            pass
+
+    def _show_strip_outline(self, bbox, detected):
+        if not self._strip_outline_wins:
+            return
+        x0, y0, x1, y1 = bbox
+        ox0 = x0 - self._OUTLINE_PAD
+        oy0 = y0 - self._OUTLINE_PAD
+        ox1 = x1 + self._OUTLINE_PAD
+        oy1 = y1 + self._OUTLINE_PAD
+        W = max(1, ox1 - ox0)
+        H = max(1, oy1 - oy0)
+        T = self._OUTLINE_THICKNESS
+        color = self._OUTLINE_HIT if detected else self._OUTLINE_MISS
+        geoms = {'top': (ox0, oy0 - T, W, T), 'bottom': (ox0, oy1, W, T), 'left': (ox0 - T, oy0, T, H), 'right': (ox1, oy0, T, H)}
+        for side, (x, y, w, h) in geoms.items():
+            win = self._strip_outline_wins[side]
+            win.configure(bg=color)
+            win.geometry(f'{w}x{h}+{x}+{y}')
+            win.deiconify()
+            win.lift()
+
+    def _hide_strip_outline(self):
+        for win in self._strip_outline_wins.values():
+            win.withdraw()
+
+    def _build_menu_button_bbox(self, rect):
+        left, top, right, bottom = rect
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+        if not width or not height:
+            return None
+        x0 = left + int(round(width * _MENU_X_MIN))
+        x1 = left + int(round(width * _MENU_X_MAX))
+        y0 = top + int(round(height * _MENU_Y_MIN))
+        y1 = top + int(round(height * _MENU_Y_MAX))
+        return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
+
+    def _analyze_menu_button_bbox(self, bbox):
+        if not SCREEN_GRAB_AVAILABLE or not bbox:
+            return False
+        arr = _screen_grab(bbox)
+        if arr is None:
+            return False
+        tr, tg, tb = _MENU_GREEN_RGB
+        tol = _MENU_GREEN_TOLERANCE
+        r = arr[:, :, 2].astype(_np.int16)
+        g = arr[:, :, 1].astype(_np.int16)
+        b = arr[:, :, 0].astype(_np.int16)
+        green_mask = (g >= r + 35) & (g >= b + 20) & (_np.abs(r - tr) <= tol) & (_np.abs(g - tg) <= tol) & (_np.abs(b - tb) <= tol)
+        run = 0
+        has_h = False
+        for ratio in green_mask.mean(axis=1):
+            run = run + 1 if ratio >= _MENU_H_RATIO else 0
+            if run >= _MENU_H_RUN_ROWS:
+                has_h = True
+                break
+        run = 0
+        has_v = False
+        for ratio in green_mask.mean(axis=0):
+            run = run + 1 if ratio >= _MENU_V_RATIO else 0
+            if run >= _MENU_V_RUN_COLS:
+                has_v = True
+                break
+        raw = arr[:, :, :3]
+        white_mask = (raw[:, :, 2] >= 185) & (raw[:, :, 1] >= 185) & (raw[:, :, 0] >= 175) & (raw.max(axis=2).astype(_np.int16) - raw.min(axis=2).astype(_np.int16) <= 55)
+        run = 0
+        has_white = False
+        for ratio in white_mask.mean(axis=1):
+            run = run + 1 if ratio >= _MENU_WHITE_FILL_RATIO else 0
+            if run >= _MENU_WHITE_FILL_ROWS:
+                has_white = True
+                break
+        return has_h and has_v or has_white
+
+    def _menu_seen_recently(self, now=None):
+        now = now or time.time()
+        return self.menu_button_detected or (self.last_menu_button_seen_ts > 0 and now - self.last_menu_button_seen_ts < _MENU_RECENT_SECONDS)
+
+    def _detect_strip_death(self):
+        if self.death_muted:
+            self._hide_strip_outline()
+            return
+        hwnd = self._find_valorant_window()
+        if not hwnd:
+            self.player_dead = False
+            self.menu_button_detected = False
+            self._valorant_rect = None
+            self._cached_strip_bboxes = None
+            self._cached_menu_bbox = None
+            self._hide_strip_outline()
+            return
+        rect = self._get_window_rect(hwnd)
+        if rect != self._valorant_rect:
+            self._valorant_rect = rect
+            self._cached_strip_bboxes = self._build_strip_bbox(rect)
+            self._cached_menu_bbox = self._build_menu_button_bbox(rect)
+        bboxes = self._cached_strip_bboxes
+        menu_bbox = self._cached_menu_bbox
+        if self.death_mute_enabled:
+            prev_menu = self.menu_button_detected
+            self.menu_button_detected = self._analyze_menu_button_bbox(menu_bbox) if menu_bbox else False
+            if self.menu_button_detected:
+                self.last_menu_button_seen_ts = time.time()
+            if self.menu_button_detected != prev_menu:
+                pass
+        else:
+            self.menu_button_detected = False
+        result = self._analyze_strip_bbox(bboxes) if bboxes else False
+        if self.menu_button_detected:
+            result = False
+        if result != self.player_dead:
+            pass
+        self.player_dead = result
+        if bboxes:
+            combined = (min((b[0] for b in bboxes)), min((b[1] for b in bboxes)), max((b[2] for b in bboxes)), max((b[3] for b in bboxes)))
+            self._show_strip_outline(combined, result)
+        else:
+            self._hide_strip_outline()
 
     def _start_log_tailer(self):
         self._log_tailer_thread = threading.Thread(target=self._log_tail_worker, daemon=True)
@@ -690,13 +933,26 @@ class DecypherOverlay:
         if not WINDOWS or not live_match_active:
             self.player_dead = False
             self.clove_ult_detected = False
+            self.menu_button_detected = False
+            self.last_menu_button_seen_ts = 0.0
+            self._valorant_hwnd = None
+            self._valorant_rect = None
+            self._cached_strip_bboxes = None
+            self._cached_menu_bbox = None
+            self._hide_strip_outline()
             self._track_live_score_transition(False)
             self._apply_death_mute(False)
             self.root.after(100, self._refresh_death_detection_loop)
             return
+        is_clove = self._is_current_agent_clove()
+        if not is_clove:
+            self._detect_strip_death()
+        now_ts = time.time()
+        if now_ts - self._last_debug_dump_ts >= 3.0:
+            pass
         self._track_live_score_transition(live_match_active)
         self._apply_death_mute(live_match_active)
-        self.root.after(100, self._refresh_death_detection_loop)
+        self.root.after(250 if not is_clove else 100, self._refresh_death_detection_loop)
 
     def _poll_score_delta(self, baseline_score):
         now = time.time()
@@ -851,6 +1107,10 @@ class DecypherOverlay:
         if self.startup_revive_gate:
             score_status, baseline_score, current_score = self._poll_score_delta(self.startup_score_baseline)
             if not self.player_dead:
+                if self._menu_seen_recently(now):
+                    self.startup_revival_since = None
+                    self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+                    return
                 if self.startup_revival_since is None:
                     self.startup_revival_since = now
                     self.mute_status.configure(text='confirming revival', fg='#d29922')
