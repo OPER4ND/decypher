@@ -43,6 +43,7 @@ class DecypherOverlay(_OverlayBase):
         self.binding_capture = None
         self._hotkey_resume_after = 0.0
         self.death_mute_enabled = False
+        self.auto_death_mute_pending = False
         self.death_muted = False
         self.manual_muted = False
         self.manual_defers_to_auto = True
@@ -152,14 +153,13 @@ class DecypherOverlay(_OverlayBase):
         self.root.after(300, self._apply_default_state)
 
     def _apply_default_state(self):
-        self.death_mute_enabled = True
-        self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
-        self.mute_status.configure(text='armed', fg='#3fb950')
+        if AUDIO_AVAILABLE:
+            self.auto_death_mute_pending = True
+            self._enable_death_mute(force_startup_gate=True)
         self.click_through = True
         self.click_through_btn.configure(fg='#58a6ff')
         self.root.attributes('-alpha', 0.6)
         self._apply_overlay_styles()
-        self._refresh_defer_toggle_style()
 
     def _position_main_window(self):
         self.root.update_idletasks()
@@ -325,26 +325,37 @@ class DecypherOverlay(_OverlayBase):
     def toggle_death_mute(self, event=None):
         if self.binding_capture:
             return
-        self.death_mute_enabled = not self.death_mute_enabled
+        self.auto_death_mute_pending = False
         if self.death_mute_enabled:
-            now = time.time()
-            self.mute_armed_ts = now
-            menu_recent = self._menu_seen_recently(now)
-            self.revive_gate = bool(self.player_dead or menu_recent)
-            self.startup_revive_gate = self.revive_gate
-            self.startup_score_baseline = None
-            self.startup_revival_since = None
-            if self.startup_revive_gate:
-                self.last_score_poll_ts = 0.0
-            self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
-            if menu_recent:
-                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
-            elif self.revive_gate:
-                self.mute_status.configure(text='waiting for revival', fg='#d29922')
-            else:
-                self.mute_status.configure(text='armed', fg='#3fb950')
-            self._refresh_defer_toggle_style()
-            return
+            self._disable_death_mute()
+        else:
+            self._enable_death_mute()
+
+    def _enable_death_mute(self, force_startup_gate=False):
+        self.death_mute_enabled = True
+        now = time.time()
+        self.mute_armed_ts = now
+        menu_recent = self._menu_seen_recently(now)
+        self.revive_gate = bool(force_startup_gate or self.player_dead or menu_recent)
+        self.startup_revive_gate = self.revive_gate
+        self.startup_score_baseline = None
+        self.startup_revival_since = None
+        if self.startup_revive_gate:
+            self.last_score_poll_ts = 0.0
+        self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
+        if menu_recent:
+            self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+        elif force_startup_gate:
+            self.mute_status.configure(text='waiting for live state', fg='#d29922')
+        elif self.revive_gate:
+            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+        else:
+            self.mute_status.configure(text='armed', fg='#3fb950')
+        self._refresh_defer_toggle_style()
+
+    def _disable_death_mute(self):
+        self.auto_death_mute_pending = False
+        self.death_mute_enabled = False
         self.mute_toggle.configure(text='[   ] Mute on Death', fg='#c9d1d9')
         self.mute_status.configure(text='disabled', fg='#6e7681')
         if self.death_muted:
@@ -561,9 +572,20 @@ class DecypherOverlay(_OverlayBase):
             self.visual_detector.reset()
             self._hide_strip_outline()
             self._track_live_score_transition(False)
-            self._apply_death_mute(False)
+            if self.auto_death_mute_pending and self.death_mute_enabled and (not self.death_muted):
+                self.mute_status.configure(text='waiting for live match', fg='#d29922')
+            else:
+                self._apply_death_mute(False)
             self.root.after(100, self._refresh_death_detection_loop)
             return
+        if self.auto_death_mute_pending:
+            self.auto_death_mute_pending = False
+            self.revive_gate = True
+            self.startup_revive_gate = True
+            self.startup_score_baseline = None
+            self.startup_revival_since = None
+            self.last_score_poll_ts = 0.0
+            self.mute_status.configure(text='checking live state', fg='#d29922')
         is_clove = self._is_current_agent_clove()
         if not is_clove:
             self._detect_strip_death()
