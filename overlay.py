@@ -7,7 +7,8 @@ import sys
 import threading
 import time
 import tkinter as tk
-from agent_select import AgentSelectOverlay, _OverlayBase
+from agent_select import _OverlayBase
+from agent_select_coordinator import AgentSelectCoordinator
 from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
 from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
@@ -32,7 +33,7 @@ class DecypherOverlay(_OverlayBase):
         self.click_through = False
         self.in_match = False
         self.in_pregame = False
-        self.agent_overlay = None
+        self.agent_select = None
         self._drag_data = {'x': 0, 'y': 0}
         self.config_path = os.path.join(self._runtime_base_dir(), 'decypher_config.json')
         self.hotkeys = self._load_hotkeys()
@@ -74,7 +75,6 @@ class DecypherOverlay(_OverlayBase):
         self.current_agent_name = None
         self.normal_round_start_cooldown_seconds = 25.0
         self.extended_round_start_cooldown_seconds = 42.0
-        self.agent_catalog_load_started = False
         self.clove_ult_detected = False
         self.clove_ult_last_ready_ts = 0.0
         self.clove_ult_ready_grace_seconds = 1.5
@@ -97,6 +97,7 @@ class DecypherOverlay(_OverlayBase):
         self.root.overrideredirect(True)
         self.root.configure(bg='#0d1117')
         self.tray_icon = TrayIcon(root=self.root, is_visible=lambda: self.visible, is_click_through=lambda: self.click_through, on_toggle_visibility=self._toggle_tray_visibility, on_toggle_click_through=self.toggle_click_through, on_exit=self.close)
+        self.agent_select = AgentSelectCoordinator(api=self.api, root=self.root, can_preload=self._can_preload_agent_select)
         self.window_width = 320
         self.root.geometry(f'{self.window_width}x1+0+50')
         self.header = tk.Frame(self.root, bg='#161b22')
@@ -940,42 +941,8 @@ class DecypherOverlay(_OverlayBase):
             self.visible = False
             self.root.after(0, self.root.withdraw)
 
-    def ensure_agent_select_overlay(self):
-        if self.agent_overlay is None:
-            self.agent_overlay = AgentSelectOverlay(self.api, master=self.root)
-        return self.agent_overlay
-
-    def show_agent_select(self):
-        overlay = self.ensure_agent_select_overlay()
-        self.root.after(0, overlay.show)
-
-    def hide_agent_select(self):
-        if self.agent_overlay:
-            self.root.after(0, self.agent_overlay.hide)
-
-    def destroy_agent_select(self):
-        if not self.agent_overlay:
-            return
-        overlay = self.agent_overlay
-        self.agent_overlay = None
-        self.root.after(0, overlay.close)
-
-    def _ensure_agent_catalog_loading(self):
-        if self.agent_catalog_load_started:
-            return
-        self.agent_catalog_load_started = True
-
-        def load_catalog():
-            self.api.load_agent_catalog_once()
-            self.root.after(0, self._preload_agent_select_overlay)
-        threading.Thread(target=load_catalog, daemon=True).start()
-
-    def _preload_agent_select_overlay(self):
-        if self.in_match and (not self.in_pregame):
-            return
-        overlay = self.ensure_agent_select_overlay()
-        overlay._refresh_agent_grid()
-        overlay.preload_agent_images()
+    def _can_preload_agent_select(self):
+        return not (self.in_match and (not self.in_pregame))
 
     def update_status(self, text: str):
         self.root.after(0, lambda: self.status_label.configure(text=text))
@@ -985,20 +952,6 @@ class DecypherOverlay(_OverlayBase):
         title = presence_title(game_state, source)
         self.root.after(0, lambda: self.status_label.configure(text=title))
 
-    def sync_agent_select_from_players(self, players: list):
-        if not self.agent_overlay:
-            return
-        overlay = self.agent_overlay
-        local_player = get_local_player(players)
-        if not local_player:
-            return
-        agent_id = local_player.get('agent')
-        if agent_id:
-            self.current_agent_id = agent_id
-            self.current_agent_name = self.api.get_agent_name(agent_id)
-        selection_state = local_player.get('selection_state')
-        self.root.after(0, lambda o=overlay, a=agent_id, s=selection_state: o.sync_from_game(a, s))
-
     def update_loop(self):
         while self.running:
             try:
@@ -1006,7 +959,7 @@ class DecypherOverlay(_OverlayBase):
                     self._set_inactive_state()
                     time.sleep(2)
                     continue
-                self._ensure_agent_catalog_loading()
+                self.agent_select.ensure_catalog_loading()
                 presence = get_match_presence(self.api)
                 self.current_mode_id = presence.mode_id
                 self.update_presence_panel(presence.game_state, presence.source)
@@ -1016,8 +969,11 @@ class DecypherOverlay(_OverlayBase):
                         self.auto_show()
                     if not self.in_pregame:
                         self.in_pregame = True
-                        self.show_agent_select()
-                    self.sync_agent_select_from_players(presence.players)
+                        self.agent_select.show()
+                    selection = self.agent_select.sync_from_players(presence.players)
+                    if selection and selection.agent_id:
+                        self.current_agent_id = selection.agent_id
+                        self.current_agent_name = selection.agent_name
                     time.sleep(1)
                     continue
                 if presence.source == 'coregame':
@@ -1030,11 +986,11 @@ class DecypherOverlay(_OverlayBase):
                         self.auto_show()
                     if self.in_pregame:
                         self.in_pregame = False
-                        self.destroy_agent_select()
+                        self.agent_select.destroy()
                     time.sleep(1)
                     continue
                 self._set_inactive_state()
-                self.root.after(0, self._preload_agent_select_overlay)
+                self.root.after(0, self.agent_select.preload_if_allowed)
                 time.sleep(3)
             except Exception as exc:
                 self.update_status(f'Error: {str(exc)[:25]}')
@@ -1044,7 +1000,7 @@ class DecypherOverlay(_OverlayBase):
         if self.in_match or self.in_pregame:
             self.in_match = False
             self.in_pregame = False
-            self.destroy_agent_select()
+            self.agent_select.destroy()
             self.current_agent_id = None
             self.current_agent_name = None
             self.clove_ult_pending_until = 0.0
