@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from ctypes import wintypes
 from agent_select import AgentSelectOverlay, _OverlayBase
+from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
 try:
@@ -99,12 +100,8 @@ _LOG_CLOVE_ULT_WINDOW_RE = re.compile('LogAbilitySystem:.*ReactiveRes_InDeathCas
 _LOG_CLOVE_ULT_USED_RE = re.compile('LogAbilitySystem:.*DelayDeathUltPointReward_C')
 
 class DecypherOverlay(_OverlayBase):
-    DEFAULT_HOTKEYS = {'hide_show': 'F2', 'click_through': 'F3', 'mute_on_death': 'F4', 'manual_mute': 'F5'}
-    HOTKEY_ACTIONS = (('hide_show', 'Hide/Show'), ('click_through', 'Click-through'), ('mute_on_death', 'Auto-Mute'), ('manual_mute', 'Manual Mute'))
-    MODIFIER_ORDER = ('CTRL', 'ALT', 'SHIFT')
-    MODIFIER_VK = {'CTRL': 17, 'ALT': 18, 'SHIFT': 16}
-    KEY_ALIASES = {'CONTROL': 'CTRL', 'CONTROL_L': 'CTRL', 'CONTROL_R': 'CTRL', 'CTRL_L': 'CTRL', 'CTRL_R': 'CTRL', 'ALT_L': 'ALT', 'ALT_R': 'ALT', 'SHIFT_L': 'SHIFT', 'SHIFT_R': 'SHIFT', 'ESCAPE': 'ESC', 'RETURN': 'ENTER', 'PRIOR': 'PAGEUP', 'NEXT': 'PAGEDOWN', 'PGUP': 'PAGEUP', 'PGDN': 'PAGEDOWN', 'DEL': 'DELETE', 'INS': 'INSERT', 'EQUALS': 'EQUAL', 'QUOTE': 'APOSTROPHE', 'BRACKETLEFT': 'LBRACKET', 'BRACKETRIGHT': 'RBRACKET', ' ': 'SPACE'}
-    KEY_NAME_TO_VK = {**{f'F{index}': 112 + index - 1 for index in range(1, 25)}, **{chr(code): code for code in range(ord('A'), ord('Z') + 1)}, **{str(index): 48 + index for index in range(10)}, 'SPACE': 32, 'TAB': 9, 'ENTER': 13, 'BACKSPACE': 8, 'INSERT': 45, 'DELETE': 46, 'HOME': 36, 'END': 35, 'PAGEUP': 33, 'PAGEDOWN': 34, 'LEFT': 37, 'UP': 38, 'RIGHT': 39, 'DOWN': 40, 'CAPSLOCK': 20, 'NUMLOCK': 144, 'SCROLLLOCK': 145, 'PAUSE': 19, 'PRINTSCREEN': 44, 'SEMICOLON': 186, 'EQUAL': 187, 'COMMA': 188, 'MINUS': 189, 'PERIOD': 190, 'SLASH': 191, 'GRAVE': 192, 'LBRACKET': 219, 'BACKSLASH': 220, 'RBRACKET': 221, 'APOSTROPHE': 222, 'NUMPAD0': 96, 'NUMPAD1': 97, 'NUMPAD2': 98, 'NUMPAD3': 99, 'NUMPAD4': 100, 'NUMPAD5': 101, 'NUMPAD6': 102, 'NUMPAD7': 103, 'NUMPAD8': 104, 'NUMPAD9': 105}
+    DEFAULT_HOTKEYS = DEFAULT_HOTKEYS
+    HOTKEY_ACTIONS = HOTKEY_ACTIONS
 
     def __init__(self):
         self.api = ValorantLocalAPI()
@@ -262,45 +259,6 @@ class DecypherOverlay(_OverlayBase):
             return os.path.dirname(os.path.abspath(sys.argv[0]))
         return os.path.dirname(os.path.abspath(__file__))
 
-    @classmethod
-    def _clean_key_name(cls, key):
-        key = str(key or '').strip().upper().replace('<', '').replace('>', '')
-        key = key.replace('-', '+')
-        return cls.KEY_ALIASES.get(key, key)
-
-    @classmethod
-    def _parse_hotkey(cls, value):
-        raw_parts = [part for part in str(value or '').replace(' ', '').split('+') if part]
-        if not raw_parts:
-            return None
-        modifiers = []
-        main_key = None
-        for raw_part in raw_parts:
-            key = cls._clean_key_name(raw_part)
-            if key in cls.MODIFIER_VK:
-                if key not in modifiers:
-                    modifiers.append(key)
-                continue
-            if key == 'ESC' or key not in cls.KEY_NAME_TO_VK or main_key is not None:
-                return None
-            main_key = key
-        if main_key is None:
-            return None
-        ordered_modifiers = [modifier for modifier in cls.MODIFIER_ORDER if modifier in modifiers]
-        return (ordered_modifiers, main_key)
-
-    @classmethod
-    def _format_hotkey(cls, value):
-        parsed = cls._parse_hotkey(value)
-        if not parsed:
-            return None
-        modifiers, main_key = parsed
-        return '+'.join([*modifiers, main_key])
-
-    @classmethod
-    def _normalize_hotkey(cls, value, fallback):
-        return cls._format_hotkey(value) or fallback
-
     def _load_hotkeys(self):
         hotkeys = dict(self.DEFAULT_HOTKEYS)
         try:
@@ -312,7 +270,7 @@ class DecypherOverlay(_OverlayBase):
             return hotkeys
         if isinstance(config, dict):
             for name, fallback in self.DEFAULT_HOTKEYS.items():
-                hotkeys[name] = self._normalize_hotkey(config.get(name), fallback)
+                hotkeys[name] = normalize_hotkey(config.get(name), fallback)
         return hotkeys
 
     def _save_hotkeys(self):
@@ -389,32 +347,6 @@ class DecypherOverlay(_OverlayBase):
         self._apply_overlay_styles()
         return True
 
-    def _event_to_hotkey(self, event):
-        key = self._clean_key_name(event.keysym)
-        if key == 'ESC':
-            return 'ESC'
-        if key in self.MODIFIER_VK:
-            return None
-        if key.startswith('KP_'):
-            keypad_key = key[3:]
-            if keypad_key.isdigit():
-                key = f'NUMPAD{keypad_key}'
-        if key not in self.KEY_NAME_TO_VK:
-            char = self._clean_key_name(getattr(event, 'char', ''))
-            if len(char) == 1 and char.isalnum():
-                key = char
-            else:
-                return None
-        modifiers = []
-        state = int(getattr(event, 'state', 0))
-        if state & 4:
-            modifiers.append('CTRL')
-        if state & 131072 or state & 8:
-            modifiers.append('ALT')
-        if state & 1:
-            modifiers.append('SHIFT')
-        return '+'.join([*modifiers, key])
-
     def _flash_hotkey_error(self, name):
         widgets = self.hotkey_widgets.get(name)
         if not widgets:
@@ -426,11 +358,11 @@ class DecypherOverlay(_OverlayBase):
         if not self.binding_capture:
             return None
         name = self.binding_capture
-        hotkey = self._event_to_hotkey(event)
+        hotkey = event_to_hotkey(event)
         if hotkey == 'ESC':
             self._cancel_hotkey_capture()
             return 'break'
-        hotkey = self._format_hotkey(hotkey)
+        hotkey = format_hotkey(hotkey)
         if not hotkey:
             self._flash_hotkey_error(name)
             return 'break'
@@ -448,16 +380,6 @@ class DecypherOverlay(_OverlayBase):
         if self._cancel_hotkey_capture():
             return 'break'
         return 'break'
-
-    def _hotkey_is_pressed(self, hotkey, user32_local):
-        parsed = self._parse_hotkey(hotkey)
-        if not parsed:
-            return False
-        modifiers, main_key = parsed
-        for modifier in modifiers:
-            if not user32_local.GetAsyncKeyState(self.MODIFIER_VK[modifier]) & 32768:
-                return False
-        return bool(user32_local.GetAsyncKeyState(self.KEY_NAME_TO_VK[main_key]) & 32768)
 
     def _create_tray_icon(self):
         if not WINDOWS or not shell32 or self.tray_icon_added:
@@ -1219,16 +1141,16 @@ class DecypherOverlay(_OverlayBase):
                     time.sleep(0.05)
                     continue
                 fired = False
-                if self._hotkey_is_pressed(self.hide_show_hotkey, user32_local):
+                if hotkey_is_pressed(self.hide_show_hotkey, user32_local):
                     self.root.after(0, self.toggle_visibility)
                     fired = True
-                if self._hotkey_is_pressed(self.click_through_hotkey, user32_local):
+                if hotkey_is_pressed(self.click_through_hotkey, user32_local):
                     self.root.after(0, self.toggle_click_through)
                     fired = True
-                if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.mute_on_death_hotkey, user32_local):
+                if AUDIO_AVAILABLE and hotkey_is_pressed(self.mute_on_death_hotkey, user32_local):
                     self.root.after(0, self.toggle_death_mute)
                     fired = True
-                if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.manual_mute_hotkey, user32_local):
+                if AUDIO_AVAILABLE and hotkey_is_pressed(self.manual_mute_hotkey, user32_local):
                     self.root.after(0, self.toggle_manual_mute)
                     fired = True
                 time.sleep(0.3 if fired else 0.05)

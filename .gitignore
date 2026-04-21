@@ -12,6 +12,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
@@ -26,10 +27,19 @@ Thumbs.db
 # Build
 dist/
 build/
+dist-fixed/
+build-fixed/
 *.egg-info/
 *.exe
 *.zip
 run.bat
+
+clove_fail.png
+clove_refine.png
+green_border.png
+report_card*.png
+valorant_ult.png
+white_button.png
 
 # Local secrets / machine-specific files
 .env
