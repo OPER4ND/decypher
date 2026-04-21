@@ -61,7 +61,7 @@ EnumWindowsProc = (
 class DetectionProfile:
     strip_x_regions: tuple[tuple[float, float], ...] = ((0.8875, 0.9225),)
     strip_y_min: float = 0.27
-    strip_y_max: float = 0.502
+    strip_y_max: float = 0.508
     strip_rgb: tuple[int, int, int] = (240, 49, 86)
     strip_tolerance: int = 24
     strip_h_ratio: float = 0.68

@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from agent_select import AgentSelectOverlay, _OverlayBase
 from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
+from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
@@ -981,14 +982,14 @@ class DecypherOverlay(_OverlayBase):
 
     def update_presence_panel(self, game_state: str, source: str):
         self.current_game_state = game_state
-        title = game_state if source != 'none' else 'Waiting for Valorant...'
+        title = presence_title(game_state, source)
         self.root.after(0, lambda: self.status_label.configure(text=title))
 
     def sync_agent_select_from_players(self, players: list):
         if not self.agent_overlay:
             return
         overlay = self.agent_overlay
-        local_player = next((player for player in players if player.get('is_local')), None)
+        local_player = get_local_player(players)
         if not local_player:
             return
         agent_id = local_player.get('agent')
@@ -1006,21 +1007,21 @@ class DecypherOverlay(_OverlayBase):
                     time.sleep(2)
                     continue
                 self._ensure_agent_catalog_loading()
-                players, game_state, source, mode_id = self.get_match_players()
-                self.current_mode_id = mode_id
-                self.update_presence_panel(game_state, source)
-                if source == 'pregame':
+                presence = get_match_presence(self.api)
+                self.current_mode_id = presence.mode_id
+                self.update_presence_panel(presence.game_state, presence.source)
+                if presence.source == 'pregame':
                     if not self.in_match:
                         self.in_match = True
                         self.auto_show()
                     if not self.in_pregame:
                         self.in_pregame = True
                         self.show_agent_select()
-                    self.sync_agent_select_from_players(players)
+                    self.sync_agent_select_from_players(presence.players)
                     time.sleep(1)
                     continue
-                if source == 'coregame':
-                    local = next((p for p in players if p.get('is_local')), None)
+                if presence.source == 'coregame':
+                    local = get_local_player(presence.players)
                     if local and local.get('agent'):
                         self.current_agent_id = local['agent']
                         self.current_agent_name = self.api.get_agent_name(local['agent'])
@@ -1052,32 +1053,6 @@ class DecypherOverlay(_OverlayBase):
         if self.visible and (not self.tray_forced_visible):
             self.auto_hide()
         self.update_presence_panel('Menu', 'none')
-
-    def get_match_players(self) -> tuple[list, str, str, str]:
-        """Return (players, game_state, source, mode_id) without mutating instance state."""
-        coregame = self.api.get_coregame_match()
-        if coregame:
-            mode = coregame.get('ModeID', 'In-game')
-            mode_id = str(mode or '')
-            game_state = self._display_game_state(mode)
-            players = [{'puuid': player.get('Subject'), 'team': player.get('TeamID'), 'agent': player.get('CharacterID'), 'is_local': player.get('Subject') == self.api.puuid} for player in coregame.get('Players', [])]
-            return (players, game_state, 'coregame', mode_id)
-        pregame = self.api.get_pregame_match()
-        if pregame:
-            ally_team = pregame.get('AllyTeam', {}).get('Players', [])
-            players = [{'puuid': player.get('Subject'), 'team': 'ally', 'agent': player.get('CharacterID'), 'selection_state': player.get('CharacterSelectionState'), 'is_local': player.get('Subject') == self.api.puuid} for player in ally_team]
-            return (players, 'Agent Select', 'pregame', '')
-        return ([], 'Menu', 'none', '')
-
-    def _display_game_state(self, mode_id: str) -> str:
-        mode = (mode_id or '').lower()
-        if 'deathmatch' in mode:
-            return 'Deathmatch'
-        if 'competitive' in mode:
-            return 'Competitive'
-        if 'unrated' in mode:
-            return 'Unrated'
-        return 'In-game'
 
     def close(self):
         self._log_tailer_stop.set()
