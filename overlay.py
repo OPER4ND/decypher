@@ -7,28 +7,12 @@ import sys
 import threading
 import time
 import tkinter as tk
-from ctypes import wintypes
 from agent_select import AgentSelectOverlay, _OverlayBase
 from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
 from tray_icon import TrayIcon
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
-try:
-    import ctypes
-    WINDOWS = True
-except ImportError:
-    WINDOWS = False
-WS_EX_TRANSPARENT = 32
-WS_EX_TOOLWINDOW = 128
-WS_EX_NOACTIVATE = 134217728
-GWL_EXSTYLE = -20
-if WINDOWS:
-    user32 = ctypes.WinDLL('user32', use_last_error=True)
-else:
-    user32 = None
-if WINDOWS:
-    user32.SetWindowLongW.restype = ctypes.c_long
-    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwindow, user32
 _SHOOTER_GAME_LOG = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'VALORANT', 'Saved', 'Logs', 'ShooterGame.log')
 _LOG_DEATH_RE = re.compile('LogPlayerController:.*AcknowledgePossession\\([\'\\"]?.+_PostDeath_')
 _LOG_REVIVAL_RE = re.compile('LogPlayerController:.*ClientRestart_Implementation.+_PostDeath_')
@@ -423,13 +407,7 @@ class DecypherOverlay(_OverlayBase):
             w.after(120, lambda win=w: self._make_passthrough(win))
 
     def _make_passthrough(self, win):
-        try:
-            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-        except Exception:
-            pass
+        apply_passthrough_toolwindow(win)
 
     def _show_strip_outline(self, bbox, detected):
         if not self._strip_outline_wins:
@@ -901,29 +879,12 @@ class DecypherOverlay(_OverlayBase):
         self._apply_overlay_styles()
 
     def _apply_overlay_styles(self):
-        if not WINDOWS:
-            return
-        try:
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_TOOLWINDOW
-            if self.binding_capture:
-                style &= ~WS_EX_NOACTIVATE
-                style &= ~WS_EX_TRANSPARENT
-            else:
-                style |= WS_EX_NOACTIVATE
-            if self.click_through and (not self.binding_capture):
-                style |= WS_EX_TRANSPARENT
-            else:
-                style &= ~WS_EX_TRANSPARENT
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-        except Exception:
-            pass
+        apply_overlay_styles(self.root, click_through=self.click_through, allow_activate=bool(self.binding_capture))
 
     def hotkey_listener(self):
         if not WINDOWS:
             return
-        user32_local = ctypes.windll.user32
+        user32_local = user32
         while self.running:
             try:
                 if self.binding_capture or time.time() < self._hotkey_resume_after:

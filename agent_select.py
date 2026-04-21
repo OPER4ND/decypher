@@ -1,23 +1,18 @@
 """Agent Select Overlay - Instalock agents and dodge matches."""
 
-import ctypes
 import io
 import threading
 import tkinter as tk
 import urllib.request
 
 from valorant_api import ValorantLocalAPI
+from win32_window import apply_no_activate_toolwindow
 
 try:
     from PIL import Image, ImageTk
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-
-GWL_EXSTYLE      = -20
-WS_EX_NOACTIVATE = 0x08000000
-WS_EX_TOOLWINDOW = 0x80
-
 
 class _OverlayBase:
     """Shared font and drag behaviour for both overlays."""
@@ -161,14 +156,7 @@ class AgentSelectOverlay(_OverlayBase):
         self.root.bind("<Escape>", lambda e: self.hide())
 
     def _apply_no_activate(self):
-        try:
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetParent(self.root.winfo_id())
-            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-        except Exception:
-            pass
+        apply_no_activate_toolwindow(self.root)
 
     def _position_window(self):
         self.root.update_idletasks()
