@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import os
+import time
 
 import requests
 import urllib3
@@ -36,11 +37,7 @@ def _is_valorant_audio_process(session) -> bool:
 def _get_valorant_volume():
     global _cached_volume
     if _cached_volume is not None:
-        try:
-            _cached_volume.GetMute()  # probe — raises if handle is stale
-            return _cached_volume
-        except Exception:
-            _cached_volume = None
+        return _cached_volume
 
     try:
         for session in AudioUtilities.GetAllSessions():
@@ -52,8 +49,14 @@ def _get_valorant_volume():
     return None
 
 
+def reset_audio_session_cache():
+    global _cached_volume
+    _cached_volume = None
+
+
 def mute_valorant(mute: bool = True) -> bool:
     """Mute or unmute the VALORANT audio session in the Windows volume mixer."""
+    global _cached_volume
     if not AUDIO_AVAILABLE:
         return False
 
@@ -198,6 +201,7 @@ class ValorantLocalAPI:
             }
             self._lockfile_mtime = mtime
             self._remote_headers_cache = None  # force token refresh on reconnect
+            reset_audio_session_cache()
             self._get_local_player_info()
             return True
         except Exception:
@@ -312,19 +316,14 @@ class ValorantLocalAPI:
     def _request(self, endpoint: str, method: str = "GET") -> dict | None:
         if not self.base_url or not self.headers:
             return None
-
         try:
             response = self.session.request(
-                method,
-                f"{self.base_url}{endpoint}",
-                headers=self.headers,
-                verify=False,
+                method, f"{self.base_url}{endpoint}",
+                headers=self.headers, verify=False,
             )
-            if response.status_code == 200:
-                return response.json()
+            return response.json() if response.status_code == 200 else None
         except Exception:
             return None
-        return None
 
     def _glz_request(self, endpoint: str, method: str = "GET", data: dict = None) -> dict | None:
         try:
@@ -338,7 +337,6 @@ class ValorantLocalAPI:
         return None
 
     def _get_remote_headers(self) -> dict:
-        import time
         now = time.time()
         if self._remote_headers_cache and (now - self._remote_headers_ts) < self._REMOTE_HEADERS_TTL:
             return self._remote_headers_cache
@@ -363,7 +361,6 @@ class ValorantLocalAPI:
         return headers
 
     def _get_client_version(self) -> str:
-        import time
         now = time.time()
         if self._client_version_cache and (now - self._client_version_ts) < self._CLIENT_VERSION_TTL:
             return self._client_version_cache

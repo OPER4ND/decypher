@@ -1,10 +1,11 @@
 """Agent Select Overlay - Instalock agents and dodge matches."""
 
-import tkinter as tk
-import threading
-import time
-import urllib.request
+import ctypes
 import io
+import threading
+import tkinter as tk
+import urllib.request
+
 from valorant_api import ValorantLocalAPI
 
 try:
@@ -13,8 +14,27 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-class AgentSelectOverlay:
+GWL_EXSTYLE      = -20
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x80
+
+
+class _OverlayBase:
+    """Shared font and drag behaviour for both overlays."""
+
     FONT_FAMILY = "Bahnschrift SemiCondensed"
+
+    def on_drag_start(self, event):
+        self._drag_data["x"] = event.x_root - self.root.winfo_x()
+        self._drag_data["y"] = event.y_root - self.root.winfo_y()
+
+    def on_drag_motion(self, event):
+        x = event.x_root - self._drag_data["x"]
+        y = event.y_root - self._drag_data["y"]
+        self.root.geometry(f"+{x}+{y}")
+
+
+class AgentSelectOverlay(_OverlayBase):
 
     def __init__(self, api: ValorantLocalAPI = None, master=None):
         self.api = api or ValorantLocalAPI()
@@ -34,7 +54,6 @@ class AgentSelectOverlay:
         self.dodge_confirming = False
         self.window_width = 420
 
-        # Create window
         self.root = tk.Tk() if self.owns_root else tk.Toplevel(master)
         self.root.title("Agent Select")
         self.root.attributes("-topmost", True)
@@ -51,7 +70,6 @@ class AgentSelectOverlay:
         self._position_window()
         self.root.after(100, self._apply_no_activate)
 
-        # === HEADER ===
         header = tk.Frame(self.root, bg="#161b22")
         header.pack(fill="x")
 
@@ -60,32 +78,29 @@ class AgentSelectOverlay:
 
         title = tk.Label(
             title_row, text="AGENT SELECT",
-            font=(self.FONT_FAMILY, 16, "bold"), fg="#58a6ff", bg="#161b22"
+            font=(self.FONT_FAMILY, 16, "bold"), fg="#58a6ff", bg="#161b22",
         )
         title.pack(side="left")
 
         close_btn = tk.Label(
-            title_row, text="X", font=(self.FONT_FAMILY, 13),
-            fg="#8b949e", bg="#161b22", cursor="hand2"
+            title_row, text="X", font=(self.FONT_FAMILY, 16),
+            fg="#8b949e", bg="#161b22", cursor="hand2",
         )
         close_btn.pack(side="right", padx=4)
         close_btn.bind("<Button-1>", lambda e: self.hide())
         close_btn.bind("<Enter>", lambda e: close_btn.configure(fg="#f85149"))
         close_btn.bind("<Leave>", lambda e: close_btn.configure(fg="#8b949e"))
 
-        # Make header draggable
         for w in [header, title_row, title]:
             w.configure(cursor="fleur")
             w.bind("<Button-1>", self.on_drag_start)
             w.bind("<B1-Motion>", self.on_drag_motion)
 
-        # === AGENT GRID ===
         self.agent_frame = tk.Frame(self.root, bg="#0d1117")
         self.agent_frame.pack(fill="both", expand=True, padx=12, pady=8)
 
         self._refresh_agent_grid()
 
-        # === LOCK IN BUTTON ===
         self.lock_btn = tk.Button(
             self.root, text="SELECT AN AGENT",
             font=(self.FONT_FAMILY, 13, "bold"),
@@ -93,14 +108,13 @@ class AgentSelectOverlay:
             activeforeground="#8b949e", activebackground="#21262d",
             relief="flat", cursor="arrow",
             state="disabled",
-            disabledforeground="#8b949e"
+            disabledforeground="#8b949e",
         )
         self.lock_btn.pack(fill="x", padx=12, pady=(5, 8))
 
-        # === DODGE SECTION (with reserved space for confirmation) ===
         self.dodge_frame = tk.Frame(self.root, bg="#0d1117", height=80)
         self.dodge_frame.pack(fill="x", padx=12, pady=(0, 12))
-        self.dodge_frame.pack_propagate(False)  # Fixed height, won't resize
+        self.dodge_frame.pack_propagate(False)
 
         self.dodge_btn = tk.Button(
             self.dodge_frame, text="DODGE",
@@ -108,16 +122,15 @@ class AgentSelectOverlay:
             fg="#f85149", bg="#161b22",
             activeforeground="#f85149", activebackground="#21262d",
             relief="flat", cursor="hand2",
-            command=self.show_dodge_confirm
+            command=self.show_dodge_confirm,
         )
         self.dodge_btn.pack(fill="x")
 
-        # Confirm area (hidden initially)
         self.confirm_frame = tk.Frame(self.dodge_frame, bg="#0d1117")
 
         confirm_label = tk.Label(
             self.confirm_frame, text="Are you sure?",
-            font=(self.FONT_FAMILY, 11), fg="#8b949e", bg="#0d1117"
+            font=(self.FONT_FAMILY, 11), fg="#8b949e", bg="#0d1117",
         )
         confirm_label.pack(pady=(8, 5))
 
@@ -130,7 +143,7 @@ class AgentSelectOverlay:
             fg="white", bg="#f85149",
             activeforeground="white", activebackground="#da3633",
             relief="flat", cursor="hand2", width=8,
-            command=self.do_dodge
+            command=self.do_dodge,
         )
         yes_btn.pack(side="left", padx=4)
 
@@ -140,22 +153,15 @@ class AgentSelectOverlay:
             fg="#c9d1d9", bg="#21262d",
             activeforeground="#c9d1d9", activebackground="#30363d",
             relief="flat", cursor="hand2", width=8,
-            command=self.hide_dodge_confirm
+            command=self.hide_dodge_confirm,
         )
         no_btn.pack(side="left", padx=4)
 
-        # Start hidden
         self.root.withdraw()
-
-        # Hotkeys
         self.root.bind("<Escape>", lambda e: self.hide())
 
     def _apply_no_activate(self):
         try:
-            import ctypes
-            GWL_EXSTYLE = -20
-            WS_EX_NOACTIVATE = 0x08000000
-            WS_EX_TOOLWINDOW = 0x80
             user32 = ctypes.windll.user32
             hwnd = user32.GetParent(self.root.winfo_id())
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
@@ -165,17 +171,39 @@ class AgentSelectOverlay:
             pass
 
     def _position_window(self):
-        """Position on the primary screen, top-center."""
         self.root.update_idletasks()
         window_height = max(1, self.root.winfo_reqheight())
         screen_width = self.root.winfo_screenwidth()
         x_pos = (screen_width - self.window_width) // 2
-        y_pos = 50
+        self.root.geometry(f"{self.window_width}x{window_height}+{x_pos}+50")
 
-        self.root.geometry(f"{self.window_width}x{window_height}+{x_pos}+{y_pos}")
+    def _set_lock_btn(self, state: str, agent_name: str = ""):
+        name = agent_name.upper()
+        if state == "idle":
+            self.lock_btn.configure(
+                text="SELECT AN AGENT", fg="#8b949e", bg="#21262d",
+                activeforeground="#8b949e", activebackground="#21262d",
+                state="disabled", cursor="arrow",
+            )
+        elif state == "ready":
+            self.lock_btn.configure(
+                text=f"LOCK IN {name}", fg="white", bg="#238636",
+                activeforeground="white", activebackground="#2ea043",
+                state="normal", cursor="hand2", command=self.lock_agent,
+            )
+        elif state == "locking":
+            self.lock_btn.configure(
+                text="LOCKING...", fg="#8b949e", bg="#21262d",
+                state="disabled", cursor="arrow",
+            )
+        elif state == "locked":
+            self.lock_btn.configure(
+                text=f"LOCKED IN {name}", fg="#3fb950", bg="#21262d",
+                activeforeground="#3fb950", activebackground="#21262d",
+                state="disabled", cursor="arrow",
+            )
 
     def _load_agent_images(self):
-        """Load visible agent images from the cached agent catalog."""
         self.agent_images_loading = True
         try:
             for agent_name, icon_url in list(self.agent_icon_urls.items()):
@@ -189,18 +217,14 @@ class AgentSelectOverlay:
                 try:
                     with urllib.request.urlopen(icon_url, timeout=5) as response:
                         data = response.read()
-                        if not self.running:
-                            return
-                        image = Image.open(io.BytesIO(data))
-                        image = image.resize((40, 40), Image.LANCZOS)
-                        photo = ImageTk.PhotoImage(image)
-                        self.agent_images[agent_name] = photo
-
-                        # Update button if it exists
-                        if agent_name in self.agent_buttons:
-                            btn = self.agent_buttons[agent_name]
-                            self._queue_button_image_update(btn, photo, agent_name)
-                except Exception as e:
+                    if not self.running:
+                        return
+                    image = Image.open(io.BytesIO(data)).resize((40, 40), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(image)
+                    self.agent_images[agent_name] = photo
+                    if agent_name in self.agent_buttons:
+                        self._queue_button_image_update(self.agent_buttons[agent_name], photo, agent_name)
+                except Exception:
                     pass
         finally:
             self.agent_images_loading = False
@@ -218,12 +242,11 @@ class AgentSelectOverlay:
             pass
 
     def _update_button_image(self, btn, photo, name):
-        """Update button with loaded image"""
         if not self.running:
             return
         try:
             btn.configure(image=photo, text="", width=40, height=40, compound="center")
-            btn.image = photo  # Keep reference
+            btn.image = photo  # Keep reference — tkinter GCs unreferenced PhotoImages
         except Exception:
             pass
 
@@ -250,12 +273,11 @@ class AgentSelectOverlay:
             self._position_window()
 
     def _create_agent_grid(self, catalog: dict):
-        """Create clickable agent grid from cached catalog."""
         cat_colors = {
-            "Duelists": "#f85149",
+            "Duelists":   "#f85149",
             "Initiators": "#3fb950",
-            "Controllers": "#a78bfa",
-            "Sentinels": "#58a6ff",
+            "Controllers":"#a78bfa",
+            "Sentinels":  "#58a6ff",
         }
 
         for role in catalog.get("roles", []):
@@ -264,13 +286,12 @@ class AgentSelectOverlay:
             if not agents:
                 continue
 
-            cat_label = tk.Label(
+            tk.Label(
                 self.agent_frame, text=cat_name.upper(),
                 font=(self.FONT_FAMILY, 10, "bold"),
                 fg=cat_colors.get(cat_name, "#8b949e"),
-                bg="#0d1117", anchor="w"
-            )
-            cat_label.pack(fill="x", pady=(6, 3))
+                bg="#0d1117", anchor="w",
+            ).pack(fill="x", pady=(6, 3))
 
             row = tk.Frame(self.agent_frame, bg="#0d1117")
             row.pack(fill="x")
@@ -286,7 +307,7 @@ class AgentSelectOverlay:
                     font=(self.FONT_FAMILY, 10),
                     fg="#c9d1d9", bg="#161b22",
                     width=6, height=2, cursor="hand2",
-                    relief="flat", borderwidth=2
+                    relief="flat", borderwidth=2,
                 )
                 btn.pack(side="left", padx=2, pady=2)
 
@@ -299,21 +320,13 @@ class AgentSelectOverlay:
                 btn.bind("<Button-1>", lambda e, a=agent_name: self.select_agent(a))
 
     def _on_agent_hover(self, btn, agent, entering):
-        """Handle hover effect"""
-        if self.locked:
+        if self.locked or agent == self.selected_agent_name:
             return
-        if agent == self.selected_agent_name:
-            return  # Don't change selected agent's appearance
-
-        if entering:
-            btn.configure(bg="#21262d")
-        else:
-            btn.configure(bg="#161b22")
+        btn.configure(bg="#21262d" if entering else "#161b22")
 
     def _clear_selected_agent_button(self):
         if self.selected_agent_name and self.selected_agent_name in self.agent_buttons:
-            prev_btn = self.agent_buttons[self.selected_agent_name]
-            prev_btn.configure(bg="#161b22", relief="flat")
+            self.agent_buttons[self.selected_agent_name].configure(bg="#161b22", relief="flat")
 
     def _set_selected_agent(self, agent_name: str, agent_id: str | None = None):
         self._clear_selected_agent_button()
@@ -321,67 +334,35 @@ class AgentSelectOverlay:
         self.selected_agent = agent_id or self.api.get_agent_uuid(agent_name)
         if not self.selected_agent:
             return False
-
         btn = self.agent_buttons.get(agent_name)
         if btn:
             btn.configure(bg="#238636", relief="solid")
         return True
 
     def select_agent(self, agent_name: str):
-        """Select an agent (highlight it)"""
-        if self.locked:
+        if self.locked or not self._set_selected_agent(agent_name):
             return
-
-        if not self._set_selected_agent(agent_name):
-            return
-
-        # Enable lock button
-        self.lock_btn.configure(
-            text=f"LOCK IN {agent_name.upper()}",
-            fg="white", bg="#238636",
-            activeforeground="white", activebackground="#2ea043",
-            state="normal", cursor="hand2",
-            command=self.lock_agent
-        )
+        self._set_lock_btn("ready", agent_name)
 
     def lock_agent(self):
-        """Lock the selected agent"""
         if self.locked or not self.selected_agent:
             return
-
         agent_name = self.selected_agent_name
         agent_id = self.selected_agent
-
-        # Disable button immediately
-        self.lock_btn.configure(
-            text="LOCKING...",
-            fg="#8b949e", bg="#21262d",
-            state="disabled", cursor="arrow"
-        )
+        self._set_lock_btn("locking")
 
         def do_lock():
-            success = self.api.lock_agent(agent_id)
-            if success:
+            if self.api.lock_agent(agent_id):
                 self.locked = True
-                self.root.after(0, lambda: self.lock_btn.configure(
-                    text=f"LOCKED IN {agent_name.upper()}",
-                    fg="#3fb950", bg="#21262d",
-                    state="disabled"
-                ))
+                self.root.after(0, lambda: self._set_lock_btn("locked", agent_name))
             else:
-                self.root.after(0, lambda: self.lock_btn.configure(
-                    text=f"LOCK IN {agent_name.upper()}",
-                    fg="white", bg="#238636",
-                    state="normal", cursor="hand2"
-                ))
+                self.root.after(0, lambda: self._set_lock_btn("ready", agent_name))
 
         threading.Thread(target=do_lock, daemon=True).start()
 
     def sync_from_game(self, agent_id: str | None, selection_state: str | None = None):
         """Reflect agent changes made through Valorant's native pregame UI."""
-        if not self.running:
-            return
-        if not agent_id:
+        if not self.running or not agent_id:
             return
 
         agent_name = self.api.get_agent_name(agent_id)
@@ -405,74 +386,36 @@ class AgentSelectOverlay:
             return
 
         self.locked = is_locked
-        if is_locked:
-            self.lock_btn.configure(
-                text=f"LOCKED IN {agent_name.upper()}",
-                fg="#3fb950", bg="#21262d",
-                activeforeground="#3fb950", activebackground="#21262d",
-                state="disabled", cursor="arrow",
-            )
-            return
-
-        self.lock_btn.configure(
-            text=f"LOCK IN {agent_name.upper()}",
-            fg="white", bg="#238636",
-            activeforeground="white", activebackground="#2ea043",
-            state="normal", cursor="hand2",
-            command=self.lock_agent,
-        )
+        self._set_lock_btn("locked" if is_locked else "ready", agent_name)
 
     def show_dodge_confirm(self):
-        """Show dodge confirmation"""
         self.dodge_confirming = True
         self.dodge_btn.pack_forget()
         self.confirm_frame.pack(fill="x")
 
     def hide_dodge_confirm(self):
-        """Hide dodge confirmation"""
         self.dodge_confirming = False
         self.confirm_frame.pack_forget()
         self.dodge_btn.pack(fill="x")
 
     def do_dodge(self):
-        """Actually dodge the match"""
         def dodge():
             if self.api.dodge_match():
                 self.root.after(0, self.hide)
             else:
                 self.root.after(0, self.hide_dodge_confirm)
-
         threading.Thread(target=dodge, daemon=True).start()
 
-    def on_drag_start(self, event):
-        self._drag_data["x"] = event.x_root - self.root.winfo_x()
-        self._drag_data["y"] = event.y_root - self.root.winfo_y()
-
-    def on_drag_motion(self, event):
-        x = event.x_root - self._drag_data["x"]
-        y = event.y_root - self._drag_data["y"]
-        self.root.geometry(f"+{x}+{y}")
-
     def show(self):
-        """Show and reset state"""
         self._refresh_agent_grid()
         self.locked = False
         self.selected_agent = None
         self.selected_agent_name = None
         self.dodge_confirming = False
-
-        # Reset UI
-        self.lock_btn.configure(
-            text="SELECT AN AGENT",
-            fg="#8b949e", bg="#21262d",
-            state="disabled", cursor="arrow"
-        )
+        self._set_lock_btn("idle")
         self.hide_dodge_confirm()
-
-        # Reset agent buttons
         for btn in self.agent_buttons.values():
             btn.configure(bg="#161b22", relief="flat")
-
         self._position_window()
         self.visible = True
         self.root.deiconify()
@@ -496,7 +439,6 @@ class AgentSelectOverlay:
 
 
 def main():
-    """Standalone test"""
     app = AgentSelectOverlay()
     app.show()
     app.root.mainloop()

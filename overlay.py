@@ -8,7 +8,7 @@ import threading
 import time
 import tkinter as tk
 from ctypes import wintypes
-from agent_select import AgentSelectOverlay
+from agent_select import AgentSelectOverlay, _OverlayBase
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 try:
     import mss as _mss
@@ -78,19 +78,52 @@ class POINT(ctypes.Structure):
 class NOTIFYICONDATA(ctypes.Structure):
     _fields_ = [('cbSize', wintypes.DWORD), ('hWnd', wintypes.HWND), ('uID', wintypes.UINT), ('uFlags', wintypes.UINT), ('uCallbackMessage', wintypes.UINT), ('hIcon', wintypes.HICON), ('szTip', wintypes.WCHAR * 128), ('dwState', wintypes.DWORD), ('dwStateMask', wintypes.DWORD), ('szInfo', wintypes.WCHAR * 256), ('uTimeoutOrVersion', wintypes.UINT), ('szInfoTitle', wintypes.WCHAR * 64), ('dwInfoFlags', wintypes.DWORD), ('guidItem', ctypes.c_byte * 16), ('hBalloonIcon', wintypes.HICON)]
 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-WndProc = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+PM_REMOVE = 1
+WM_QUIT = 18
+_TRAY_CLASS = 'DecypherTrayMsgWnd'
+TrayWndProc = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+class MSG(ctypes.Structure):
+    _fields_ = [('hwnd', wintypes.HWND), ('message', wintypes.UINT), ('wParam', wintypes.WPARAM), ('lParam', wintypes.LPARAM), ('time', wintypes.DWORD), ('pt', POINT)]
+
+class WNDCLASSEXW(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.UINT), ('style', wintypes.UINT), ('lpfnWndProc', TrayWndProc), ('cbClsExtra', ctypes.c_int), ('cbWndExtra', ctypes.c_int), ('hInstance', wintypes.HINSTANCE), ('hIcon', wintypes.HICON), ('hCursor', wintypes.HANDLE), ('hbrBackground', wintypes.HANDLE), ('lpszMenuName', wintypes.LPCWSTR), ('lpszClassName', wintypes.LPCWSTR), ('hIconSm', wintypes.HICON)]
 if WINDOWS:
     user32.SetWindowLongPtrW.restype = ctypes.c_void_p
     user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
     user32.SetWindowLongW.restype = ctypes.c_long
     user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-    user32.CallWindowProcW.restype = ctypes.c_longlong
-    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    user32.DefWindowProcW.restype = ctypes.c_longlong
-    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.LoadIconW.restype = wintypes.HICON
     user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.PeekMessageW.argtypes = [ctypes.POINTER(MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
     user32.CreatePopupMenu.restype = wintypes.HMENU
+    user32.AppendMenuW.restype = wintypes.BOOL
+    user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
+    user32.TrackPopupMenu.restype = wintypes.BOOL
+    user32.TrackPopupMenu.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, ctypes.c_void_p]
+    user32.DestroyMenu.restype = wintypes.BOOL
+    user32.DestroyMenu.argtypes = [wintypes.HMENU]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.GetCursorPos.restype = wintypes.BOOL
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    user32.RegisterClassExW.restype = wintypes.ATOM
+    user32.RegisterClassExW.argtypes = [ctypes.c_void_p]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p]
+    user32.GetMessageW.restype = wintypes.BOOL
+    user32.GetMessageW.argtypes = [ctypes.POINTER(MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.DispatchMessageW.restype = ctypes.c_longlong
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
+    user32.PostThreadMessageW.restype = wintypes.BOOL
+    user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.UnregisterClassW.restype = wintypes.BOOL
+    user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.DefWindowProcW.restype = ctypes.c_longlong
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 _STRIP_X_REGIONS = ((0.8875, 0.9225),)
 _STRIP_Y_MIN = 0.27
 _STRIP_Y_MAX = 0.502
@@ -117,8 +150,7 @@ _LOG_REVIVAL_RE = re.compile('LogPlayerController:.*ClientRestart_Implementation
 _LOG_CLOVE_ULT_WINDOW_RE = re.compile('LogAbilitySystem:.*ReactiveRes_InDeathCastWindow_C')
 _LOG_CLOVE_ULT_USED_RE = re.compile('LogAbilitySystem:.*DelayDeathUltPointReward_C')
 
-class DecypherOverlay:
-    FONT_FAMILY = 'Bahnschrift SemiCondensed'
+class DecypherOverlay(_OverlayBase):
     DEFAULT_HOTKEYS = {'hide_show': 'F2', 'click_through': 'F3', 'mute_on_death': 'F4', 'manual_mute': 'F5'}
     HOTKEY_ACTIONS = (('hide_show', 'Hide/Show'), ('click_through', 'Click-through'), ('mute_on_death', 'Auto-Mute'), ('manual_mute', 'Manual Mute'))
     MODIFIER_ORDER = ('CTRL', 'ALT', 'SHIFT')
@@ -148,6 +180,7 @@ class DecypherOverlay:
         self.death_mute_enabled = False
         self.death_muted = False
         self.manual_muted = False
+        self.manual_defers_to_auto = True
         self.player_dead = False
         self.revive_gate = False
         self.startup_revive_gate = False
@@ -184,7 +217,8 @@ class DecypherOverlay:
         self.tray_hwnd = None
         self.tray_icon_added = False
         self.tray_wndproc = None
-        self.tray_old_wndproc = None
+        self._tray_menu_hwnd = None
+        self._tray_pump_thread_id = None
         self._log_tailer_stop = threading.Event()
         self._log_tailer_thread = None
         self._strip_outline_wins = {}
@@ -216,7 +250,7 @@ class DecypherOverlay:
         self.click_through_btn = tk.Label(btn_frame, text='🖱', font=(self.FONT_FAMILY, 12), fg='#8b949e', bg='#161b22', cursor='hand2')
         self.click_through_btn.pack(side='left', padx=4)
         self.click_through_btn.bind('<Button-1>', self.toggle_click_through)
-        close_btn = tk.Label(btn_frame, text='X', font=(self.FONT_FAMILY, 13), fg='#8b949e', bg='#161b22', cursor='hand2')
+        close_btn = tk.Label(btn_frame, text='X', font=(self.FONT_FAMILY, 16), fg='#8b949e', bg='#161b22', cursor='hand2')
         close_btn.pack(side='left', padx=4)
         close_btn.bind('<Button-1>', lambda _event: self.close())
         close_btn.bind('<Enter>', lambda _event: close_btn.configure(fg='#f85149'))
@@ -235,10 +269,14 @@ class DecypherOverlay:
         if AUDIO_AVAILABLE:
             toggle_frame = tk.Frame(footer, bg='#161b22')
             toggle_frame.pack(fill='x', padx=10, pady=(0, 10))
-            self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2', width=22)
-            self.mute_toggle.pack(fill='x')
+            self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
+            self.mute_toggle.pack(anchor='center')
             self.mute_toggle.bind('<Button-1>', self.toggle_death_mute)
             self.mute_status = tk.Label(toggle_frame, text='disabled', font=(self.FONT_FAMILY, 10), fg='#6e7681', bg='#161b22')
+            self.mute_status.pack(anchor='center')
+            self.defer_toggle = tk.Label(toggle_frame, text='[   ] Manual defers to round', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
+            self.defer_toggle.pack(anchor='center')
+            self.defer_toggle.bind('<Button-1>', self.toggle_manual_defers_to_auto)
         self._position_main_window()
         self.root.withdraw()
         if WINDOWS:
@@ -254,8 +292,17 @@ class DecypherOverlay:
             self.hotkey_thread.start()
         self.root.bind('<KeyPress>', self._handle_hotkey_capture)
         self.root.bind('<Escape>', self._handle_escape)
-        self.root.after(300, self.toggle_death_mute)
-        self.root.after(300, self.toggle_click_through)
+        self.root.after(300, self._apply_default_state)
+
+    def _apply_default_state(self):
+        self.death_mute_enabled = True
+        self.mute_toggle.configure(text='[ x ] Mute on Death', fg='#3fb950')
+        self.mute_status.configure(text='armed', fg='#3fb950')
+        self.click_through = True
+        self.click_through_btn.configure(fg='#58a6ff')
+        self.root.attributes('-alpha', 0.6)
+        self._apply_overlay_styles()
+        self._refresh_defer_toggle_style()
 
     def _position_main_window(self):
         self.root.update_idletasks()
@@ -468,31 +515,14 @@ class DecypherOverlay:
                 return False
         return bool(user32_local.GetAsyncKeyState(self.KEY_NAME_TO_VK[main_key]) & 32768)
 
-    @staticmethod
-    def _set_window_long_ptr(hwnd, index, value):
-        if ctypes.sizeof(ctypes.c_void_p) == 8 and hasattr(user32, 'SetWindowLongPtrW'):
-            return user32.SetWindowLongPtrW(hwnd, index, ctypes.c_void_p(value))
-        return user32.SetWindowLongW(hwnd, index, value)
-
     def _create_tray_icon(self):
         if not WINDOWS or not shell32 or self.tray_icon_added:
             return
         try:
             self.root.update_idletasks()
-            self.tray_hwnd = user32.GetParent(self.root.winfo_id())
-            self.tray_wndproc = WndProc(self._tray_window_proc)
-            callback_ptr = ctypes.cast(self.tray_wndproc, ctypes.c_void_p).value
-            self.tray_old_wndproc = self._set_window_long_ptr(self.tray_hwnd, GWL_WNDPROC, callback_ptr)
-            notify_data = NOTIFYICONDATA()
-            notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
-            notify_data.hWnd = self.tray_hwnd
-            notify_data.uID = TRAY_UID
-            notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
-            notify_data.uCallbackMessage = WM_TRAYICON
-            notify_data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
-            notify_data.szTip = 'Decypher'
-            if shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(notify_data)):
-                self.tray_icon_added = True
+            self._tray_menu_hwnd = user32.GetParent(self.root.winfo_id())
+            t = threading.Thread(target=self._tray_pump, daemon=True, name='tray-pump')
+            t.start()
         except Exception as exc:
             pass
 
@@ -500,38 +530,117 @@ class DecypherOverlay:
         if not WINDOWS or not shell32:
             return
         if self.tray_icon_added and self.tray_hwnd:
-            notify_data = NOTIFYICONDATA()
-            notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
-            notify_data.hWnd = self.tray_hwnd
-            notify_data.uID = TRAY_UID
+            nd = NOTIFYICONDATA()
+            nd.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+            nd.hWnd = self.tray_hwnd
+            nd.uID = TRAY_UID
             try:
-                shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(notify_data))
+                shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nd))
             except Exception:
                 pass
             self.tray_icon_added = False
-        if self.tray_hwnd and self.tray_old_wndproc:
+        thread_id = self._tray_pump_thread_id
+        if thread_id:
             try:
-                self._set_window_long_ptr(self.tray_hwnd, GWL_WNDPROC, self.tray_old_wndproc)
+                user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
             except Exception:
                 pass
+            self._tray_pump_thread_id = None
         self.tray_hwnd = None
-        self.tray_old_wndproc = None
         self.tray_wndproc = None
 
-    def _tray_window_proc(self, hwnd, message, wparam, lparam):
-        if message == WM_TRAYICON and int(wparam) == TRAY_UID:
-            tray_event = int(lparam)
-            if tray_event == WM_LBUTTONUP:
-                self.root.after(0, self._toggle_tray_visibility)
-            elif tray_event in (WM_RBUTTONUP, WM_CONTEXTMENU):
-                self.root.after(0, self._show_tray_menu)
-            return 0
-        if self.tray_old_wndproc:
-            return user32.CallWindowProcW(ctypes.c_void_p(self.tray_old_wndproc), hwnd, message, wparam, lparam)
-        return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+    def _tray_pump(self):
+        """Dedicated background message pump for the tray icon.
+
+        Runs in its own thread with its own message-only HWND so tkinter's
+        GetMessage/DispatchMessage loop never consumes our WM_TRAYICON messages.
+        The Python WINFUNCTYPE callback is safe here because this thread has a
+        proper Python thread state — no conflict with tkinter's GIL management.
+        """
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        kernel32.GetCurrentThreadId.argtypes = []
+        kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        self._tray_pump_thread_id = kernel32.GetCurrentThreadId()
+        hinstance = kernel32.GetModuleHandleW(None)
+        hwnd = None
+        registered = False
+
+        @TrayWndProc
+        def wnd_proc(hwnd_cb, msg, wparam, lparam):
+            if msg == WM_TRAYICON:
+                ev = lparam & 65535
+                if ev == WM_LBUTTONUP:
+                    self.root.after(0, self._toggle_tray_visibility)
+                elif ev in (WM_RBUTTONUP, WM_CONTEXTMENU):
+                    self.root.after(0, self._show_tray_menu)
+                return 0
+            return user32.DefWindowProcW(hwnd_cb, msg, wparam, lparam)
+        self.tray_wndproc = wnd_proc
+        try:
+            wc = WNDCLASSEXW()
+            wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+            wc.lpfnWndProc = wnd_proc
+            wc.hInstance = hinstance
+            wc.lpszClassName = _TRAY_CLASS
+            atom = user32.RegisterClassExW(ctypes.byref(wc))
+            if not atom:
+                err = ctypes.get_last_error()
+                if err != 1410:
+                    return
+            else:
+                registered = True
+            hwnd = user32.CreateWindowExW(0, _TRAY_CLASS, None, 0, 0, 0, 0, 0, ctypes.c_void_p(-3), None, hinstance, None)
+            if not hwnd:
+                return
+            self.tray_hwnd = hwnd
+            notify_data = NOTIFYICONDATA()
+            notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+            notify_data.hWnd = hwnd
+            notify_data.uID = TRAY_UID
+            notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+            notify_data.uCallbackMessage = WM_TRAYICON
+            notify_data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
+            notify_data.szTip = 'Decypher'
+            if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(notify_data)):
+                return
+            self.tray_icon_added = True
+            msg_buf = MSG()
+            while user32.GetMessageW(ctypes.byref(msg_buf), None, 0, 0) > 0:
+                user32.DispatchMessageW(ctypes.byref(msg_buf))
+        except Exception as exc:
+            pass
+        finally:
+            if self.tray_icon_added and hwnd:
+                nd = NOTIFYICONDATA()
+                nd.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+                nd.hWnd = hwnd
+                nd.uID = TRAY_UID
+                try:
+                    shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nd))
+                except Exception:
+                    pass
+                self.tray_icon_added = False
+            if hwnd:
+                try:
+                    user32.DestroyWindow(hwnd)
+                except Exception:
+                    pass
+            if registered:
+                try:
+                    user32.UnregisterClassW(_TRAY_CLASS, hinstance)
+                except Exception:
+                    pass
+            self.tray_hwnd = None
+            self.tray_wndproc = None
+            self._tray_pump_thread_id = None
 
     def _show_tray_menu(self):
-        if not WINDOWS or not self.tray_hwnd:
+        if not WINDOWS:
+            return
+        menu_hwnd = self._tray_menu_hwnd
+        if not menu_hwnd:
             return
         point = POINT()
         if not user32.GetCursorPos(ctypes.byref(point)):
@@ -545,8 +654,8 @@ class DecypherOverlay:
         user32.AppendMenuW(menu, MF_STRING, TRAY_CLICK_THROUGH_ID, click_text)
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, TRAY_EXIT_ID, 'Exit')
-        user32.SetForegroundWindow(self.tray_hwnd)
-        command = user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, point.x, point.y, 0, self.tray_hwnd, None)
+        user32.SetForegroundWindow(menu_hwnd)
+        command = user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, point.x, point.y, 0, menu_hwnd, None)
         user32.DestroyMenu(menu)
         if command == TRAY_SHOW_HIDE_ID:
             self._toggle_tray_visibility()
@@ -595,6 +704,7 @@ class DecypherOverlay:
                 self.mute_status.configure(text='waiting for revival', fg='#d29922')
             else:
                 self.mute_status.configure(text='armed', fg='#3fb950')
+            self._refresh_defer_toggle_style()
             return
         self.mute_toggle.configure(text='[   ] Mute on Death', fg='#c9d1d9')
         self.mute_status.configure(text='disabled', fg='#6e7681')
@@ -608,9 +718,12 @@ class DecypherOverlay:
         self.clove_ult_pending_score_total = None
         self.mute_armed_ts = 0.0
         self.score_total_at_mute = None
+        self._refresh_defer_toggle_style()
 
     def toggle_manual_mute(self, event=None):
         if self.binding_capture:
+            return
+        if self.manual_defers_to_auto and self.death_mute_enabled and self.death_muted and self.manual_muted:
             return
         previous = self.manual_muted
         self.manual_muted = not self.manual_muted
@@ -620,6 +733,25 @@ class DecypherOverlay:
             return
         if self.manual_muted:
             pass
+
+    def toggle_manual_defers_to_auto(self, event=None):
+        self.manual_defers_to_auto = not self.manual_defers_to_auto
+        self._refresh_defer_toggle_style()
+
+    def _refresh_defer_toggle_style(self):
+        checked = self.manual_defers_to_auto
+        active = self.death_mute_enabled
+        text = '[ x ] Manual defers to round' if checked else '[   ] Manual defers to round'
+        if checked:
+            fg = '#3fb950' if active else '#2d5c38'
+        else:
+            fg = '#c9d1d9' if active else '#4a5568'
+        self.defer_toggle.configure(text=text, fg=fg)
+
+    def _maybe_clear_deferred_manual(self):
+        if self.manual_defers_to_auto and self.death_mute_enabled and self.manual_muted:
+            self.manual_muted = False
+            self._sync_target_mute()
 
     def _enum_visible_windows(self):
         if not WINDOWS:
@@ -653,7 +785,7 @@ class DecypherOverlay:
         return (rect.left, rect.top, rect.right, rect.bottom)
 
     def _find_valorant_window(self):
-        if self._valorant_hwnd and user32.IsWindow(self._valorant_hwnd):
+        if self._valorant_hwnd:
             return self._valorant_hwnd
         for hwnd, title in self._enum_visible_windows():
             if 'valorant' in title.lower():
@@ -1011,6 +1143,7 @@ class DecypherOverlay:
         self.round_start_requires_clear = True
         self.round_start_clear_since = None
         self.revive_gate = bool(self.player_dead)
+        self._maybe_clear_deferred_manual()
 
     def _is_current_agent_clove(self):
         return (self.current_agent_name or '').lower() == 'clove'
@@ -1106,123 +1239,139 @@ class DecypherOverlay:
         if not AUDIO_AVAILABLE or not self.death_mute_enabled:
             return
         if not live_match_active:
-            self.revive_gate = False
-            self.startup_revive_gate = False
-            self.startup_score_baseline = None
-            self.startup_revival_since = None
-            self.mute_armed_ts = 0.0
-            self.clove_ult_pending_until = 0.0
-            self.clove_ult_pending_score_total = None
-            self.score_total_at_mute = None
-            if self.death_muted and self._release_death_mute() > 0:
-                self._begin_round_start_cooldown()
-                status_text = 'death mute released; manual mute still on' if self.manual_muted else 'unmuted (not in live match)'
-                self.mute_status.configure(text=status_text, fg='#3fb950')
+            self._on_match_end()
             return
         now = time.time()
         if self.startup_revive_gate:
-            score_status, baseline_score, current_score = self._poll_score_delta(self.startup_score_baseline)
-            if not self.player_dead:
-                if self._menu_seen_recently(now):
-                    self.startup_revival_since = None
-                    self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
-                    return
-                if self.startup_revival_since is None:
-                    self.startup_revival_since = now
-                    self.mute_status.configure(text='confirming revival', fg='#d29922')
-                clear_for = now - self.startup_revival_since
-                if clear_for >= self.startup_revival_seconds:
-                    self.startup_revive_gate = False
-                    self.startup_score_baseline = None
-                    self.startup_revival_since = None
-                    self.revive_gate = False
-                    self.mute_armed_ts = 0.0
-                    self.mute_status.configure(text='armed', fg='#3fb950')
-                else:
-                    self.mute_status.configure(text=f'confirming revival {int(clear_for)}s', fg='#d29922')
-                return
-            self.startup_revival_since = None
-            if score_status == 'wait':
-                self.mute_status.configure(text='waiting for revival', fg='#d29922')
-                return
-            if score_status == 'baseline':
-                self.startup_score_baseline = baseline_score
-                if current_score is not None:
-                    self.mute_status.configure(text=f'waiting for revival or score change from {current_score}', fg='#d29922')
-                return
-            if score_status == 'changed':
-                self.startup_revive_gate = False
-                self.startup_score_baseline = None
-                self.startup_revival_since = None
-                self._begin_round_start_cooldown(now, baseline_score, current_score)
-                self.mute_armed_ts = 0.0
-                self.mute_status.configure(text=f'round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            self._handle_startup_gate(now)
             return
         if self._apply_round_start_gate(now):
             return
         if self._apply_clove_ult_gate(now):
             return
         if self.player_dead and (not self.death_muted):
-            current_score = self.api.get_round_score_total()
-            if current_score is not None and self.live_score_total is not None and (current_score != self.live_score_total):
-                previous_score = self.live_score_total
-                self.live_score_total = current_score
-                self._begin_round_start_cooldown(now, previous_score, current_score)
-                self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
-                return
-            if self.revive_gate:
-                return
-            if self.mute_armed_ts > 0 and now - self.mute_armed_ts <= self.mute_arm_grace_seconds:
-                self.revive_gate = True
-                self.startup_revive_gate = True
-                self.startup_score_baseline = None
-                self.startup_revival_since = None
-                self.round_start_cooldown_until = 0.0
-                self.round_start_requires_clear = False
-                self.round_start_clear_since = None
-                self.last_score_poll_ts = 0.0
-                self.mute_status.configure(text='waiting for revival', fg='#d29922')
-                return
-            clove_ult_recently_ready = self.clove_ult_detected or now - self.clove_ult_last_ready_ts <= self.clove_ult_ready_grace_seconds
-            if self._is_current_agent_clove() and clove_ult_recently_ready:
-                self.clove_ult_pending_until = now + self.clove_ult_pending_seconds
-                self.clove_ult_pending_score_total = current_score
-                self.last_score_poll_ts = 0.0
-                self.mute_status.configure(text=f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s', fg='#d29922')
-                return
-            if self._engage_death_mute() > 0:
-                self.mute_armed_ts = 0.0
-                self.score_total_at_mute = self.api.get_round_score_total()
-                self.last_score_poll_ts = time.time()
-                if self.score_total_at_mute is None:
-                    self.mute_status.configure(text='muted whole game; waiting for live score', fg='#f85149')
-                else:
-                    self.mute_status.configure(text=f'muted whole game; waiting for score change from {self.score_total_at_mute}', fg='#f85149')
+            self._on_death_trigger(now)
             return
         if not self.player_dead and self.revive_gate:
-            self.revive_gate = False
-            self.mute_armed_ts = 0.0
-            if not self.death_muted:
-                self.mute_status.configure(text='armed', fg='#3fb950')
+            self._on_revive_clear()
             return
         if self.death_muted:
-            score_status, baseline_score, current_score = self._poll_score_delta(self.score_total_at_mute)
-            if score_status == 'wait':
+            self._on_muted_poll()
+
+    def _on_match_end(self):
+        self.revive_gate = False
+        self.startup_revive_gate = False
+        self.startup_score_baseline = None
+        self.startup_revival_since = None
+        self.mute_armed_ts = 0.0
+        self.clove_ult_pending_until = 0.0
+        self.clove_ult_pending_score_total = None
+        self.score_total_at_mute = None
+        self._maybe_clear_deferred_manual()
+        if self.death_muted and self._release_death_mute() > 0:
+            self._begin_round_start_cooldown()
+            status_text = 'death mute released; manual mute still on' if self.manual_muted else 'unmuted (not in live match)'
+            self.mute_status.configure(text=status_text, fg='#3fb950')
+
+    def _handle_startup_gate(self, now):
+        score_status, baseline_score, current_score = self._poll_score_delta(self.startup_score_baseline)
+        if not self.player_dead:
+            if self._menu_seen_recently(now):
+                self.startup_revival_since = None
+                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
                 return
-            if score_status == 'baseline':
-                self.score_total_at_mute = baseline_score
-                if current_score is not None:
-                    self.mute_status.configure(text=f'muted whole game; waiting for score change from {current_score}', fg='#f85149')
-                return
-            if score_status == 'changed':
-                self.player_dead = False
-                self._begin_round_start_cooldown(previous_score=baseline_score, current_score=current_score)
-                if self._release_death_mute() <= 0:
-                    return
-                self.score_total_at_mute = None
+            if self.startup_revival_since is None:
+                self.startup_revival_since = now
+                self.mute_status.configure(text='confirming revival', fg='#d29922')
+            clear_for = now - self.startup_revival_since
+            if clear_for >= self.startup_revival_seconds:
+                self.startup_revive_gate = False
+                self.startup_score_baseline = None
+                self.startup_revival_since = None
+                self.revive_gate = False
                 self.mute_armed_ts = 0.0
-                status_text = f'death mute released; manual mute still on; cooldown {int(self.round_start_cooldown_seconds)}s' if self.manual_muted else f'unmuted; round-start cooldown {int(self.round_start_cooldown_seconds)}s'
-                self.mute_status.configure(text=status_text, fg='#d29922')
+                self.mute_status.configure(text='armed', fg='#3fb950')
+            else:
+                self.mute_status.configure(text=f'confirming revival {int(clear_for)}s', fg='#d29922')
+            return
+        self.startup_revival_since = None
+        if score_status == 'wait':
+            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+            return
+        if score_status == 'baseline':
+            self.startup_score_baseline = baseline_score
+            if current_score is not None:
+                self.mute_status.configure(text=f'waiting for revival or score change from {current_score}', fg='#d29922')
+            return
+        if score_status == 'changed':
+            self.startup_revive_gate = False
+            self.startup_score_baseline = None
+            self.startup_revival_since = None
+            self._begin_round_start_cooldown(now, baseline_score, current_score)
+            self.mute_armed_ts = 0.0
+            self.mute_status.configure(text=f'round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+
+    def _on_death_trigger(self, now):
+        current_score = self.api.get_round_score_total()
+        if current_score is not None and self.live_score_total is not None and (current_score != self.live_score_total):
+            previous_score = self.live_score_total
+            self.live_score_total = current_score
+            self._begin_round_start_cooldown(now, previous_score, current_score)
+            self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            return
+        if self.revive_gate:
+            return
+        if self.mute_armed_ts > 0 and now - self.mute_armed_ts <= self.mute_arm_grace_seconds:
+            self.revive_gate = True
+            self.startup_revive_gate = True
+            self.startup_score_baseline = None
+            self.startup_revival_since = None
+            self.round_start_cooldown_until = 0.0
+            self.round_start_requires_clear = False
+            self.round_start_clear_since = None
+            self.last_score_poll_ts = 0.0
+            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+            return
+        clove_ult_recently_ready = self.clove_ult_detected or now - self.clove_ult_last_ready_ts <= self.clove_ult_ready_grace_seconds
+        if self._is_current_agent_clove() and clove_ult_recently_ready:
+            self.clove_ult_pending_until = now + self.clove_ult_pending_seconds
+            self.clove_ult_pending_score_total = current_score
+            self.last_score_poll_ts = 0.0
+            self.mute_status.configure(text=f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s', fg='#d29922')
+            return
+        if self._engage_death_mute() > 0:
+            self.mute_armed_ts = 0.0
+            self.score_total_at_mute = self.api.get_round_score_total()
+            self.last_score_poll_ts = time.time()
+            if self.score_total_at_mute is None:
+                self.mute_status.configure(text='muted whole game; waiting for live score', fg='#f85149')
+            else:
+                self.mute_status.configure(text=f'muted whole game; waiting for score change from {self.score_total_at_mute}', fg='#f85149')
+
+    def _on_revive_clear(self):
+        self.revive_gate = False
+        self.mute_armed_ts = 0.0
+        if not self.death_muted:
+            self.mute_status.configure(text='armed', fg='#3fb950')
+
+    def _on_muted_poll(self):
+        score_status, baseline_score, current_score = self._poll_score_delta(self.score_total_at_mute)
+        if score_status == 'wait':
+            return
+        if score_status == 'baseline':
+            self.score_total_at_mute = baseline_score
+            if current_score is not None:
+                self.mute_status.configure(text=f'muted whole game; waiting for score change from {current_score}', fg='#f85149')
+            return
+        if score_status == 'changed':
+            self.player_dead = False
+            self._begin_round_start_cooldown(previous_score=baseline_score, current_score=current_score)
+            if self._release_death_mute() <= 0:
+                return
+            self.score_total_at_mute = None
+            self.mute_armed_ts = 0.0
+            status_text = f'death mute released; manual mute still on; cooldown {int(self.round_start_cooldown_seconds)}s' if self.manual_muted else f'unmuted; round-start cooldown {int(self.round_start_cooldown_seconds)}s'
+            self.mute_status.configure(text=status_text, fg='#d29922')
 
     def _sync_target_mute(self) -> int:
         return 1 if mute_valorant(self.death_muted or self.manual_muted) else 0
@@ -1237,15 +1386,6 @@ class DecypherOverlay:
     def _release_death_mute(self) -> int:
         self.death_muted = False
         return self._sync_target_mute()
-
-    def on_drag_start(self, event):
-        self._drag_data['x'] = event.x_root - self.root.winfo_x()
-        self._drag_data['y'] = event.y_root - self.root.winfo_y()
-
-    def on_drag_motion(self, event):
-        x = event.x_root - self._drag_data['x']
-        y = event.y_root - self._drag_data['y']
-        self.root.geometry(f'+{x}+{y}')
 
     def toggle_visibility(self):
         if self.binding_capture:
@@ -1295,19 +1435,20 @@ class DecypherOverlay:
                 if self.binding_capture or time.time() < self._hotkey_resume_after:
                     time.sleep(0.05)
                     continue
+                fired = False
                 if self._hotkey_is_pressed(self.hide_show_hotkey, user32_local):
                     self.root.after(0, self.toggle_visibility)
-                    time.sleep(0.3)
+                    fired = True
                 if self._hotkey_is_pressed(self.click_through_hotkey, user32_local):
                     self.root.after(0, self.toggle_click_through)
-                    time.sleep(0.3)
+                    fired = True
                 if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.mute_on_death_hotkey, user32_local):
                     self.root.after(0, self.toggle_death_mute)
-                    time.sleep(0.3)
+                    fired = True
                 if AUDIO_AVAILABLE and self._hotkey_is_pressed(self.manual_mute_hotkey, user32_local):
                     self.root.after(0, self.toggle_manual_mute)
-                    time.sleep(0.3)
-                time.sleep(0.05)
+                    fired = True
+                time.sleep(0.3 if fired else 0.05)
             except Exception:
                 pass
 
@@ -1388,7 +1529,8 @@ class DecypherOverlay:
                     time.sleep(2)
                     continue
                 self._ensure_agent_catalog_loading()
-                players, game_state, source = self.get_match_players()
+                players, game_state, source, mode_id = self.get_match_players()
+                self.current_mode_id = mode_id
                 self.update_presence_panel(game_state, source)
                 if source == 'pregame':
                     if not self.in_match:
@@ -1401,6 +1543,10 @@ class DecypherOverlay:
                     time.sleep(1)
                     continue
                 if source == 'coregame':
+                    local = next((p for p in players if p.get('is_local')), None)
+                    if local and local.get('agent'):
+                        self.current_agent_id = local['agent']
+                        self.current_agent_name = self.api.get_agent_name(local['agent'])
                     if not self.in_match:
                         self.in_match = True
                         self.auto_show()
@@ -1430,30 +1576,21 @@ class DecypherOverlay:
             self.auto_hide()
         self.update_presence_panel('Menu', 'none')
 
-    def get_match_players(self) -> tuple[list, str, str]:
+    def get_match_players(self) -> tuple[list, str, str, str]:
+        """Return (players, game_state, source, mode_id) without mutating instance state."""
         coregame = self.api.get_coregame_match()
         if coregame:
             mode = coregame.get('ModeID', 'In-game')
-            self.current_mode_id = str(mode or '')
+            mode_id = str(mode or '')
             game_state = self._display_game_state(mode)
-            local_agent_id = None
             players = [{'puuid': player.get('Subject'), 'team': player.get('TeamID'), 'agent': player.get('CharacterID'), 'is_local': player.get('Subject') == self.api.puuid} for player in coregame.get('Players', [])]
-            for player in players:
-                if player.get('is_local'):
-                    local_agent_id = player.get('agent')
-                    break
-            if local_agent_id:
-                self.current_agent_id = local_agent_id
-                self.current_agent_name = self.api.get_agent_name(local_agent_id)
-            return (players, game_state, 'coregame')
+            return (players, game_state, 'coregame', mode_id)
         pregame = self.api.get_pregame_match()
         if pregame:
-            self.current_mode_id = ''
             ally_team = pregame.get('AllyTeam', {}).get('Players', [])
             players = [{'puuid': player.get('Subject'), 'team': 'ally', 'agent': player.get('CharacterID'), 'selection_state': player.get('CharacterSelectionState'), 'is_local': player.get('Subject') == self.api.puuid} for player in ally_team]
-            return (players, 'Agent Select', 'pregame')
-        self.current_mode_id = ''
-        return ([], 'Menu', 'none')
+            return (players, 'Agent Select', 'pregame', '')
+        return ([], 'Menu', 'none', '')
 
     def _display_game_state(self, mode_id: str) -> str:
         mode = (mode_id or '').lower()
