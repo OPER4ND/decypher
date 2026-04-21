@@ -10,23 +10,7 @@ import tkinter as tk
 from ctypes import wintypes
 from agent_select import AgentSelectOverlay, _OverlayBase
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
-try:
-    import mss as _mss
-    import numpy as _np
-    _mss_instance = _mss.mss()
-    SCREEN_GRAB_AVAILABLE = True
-
-    def _screen_grab(bbox):
-        x0, y0, x1, y1 = bbox
-        monitor = {'left': x0, 'top': y0, 'width': x1 - x0, 'height': y1 - y0}
-        shot = _mss_instance.grab(monitor)
-        return _np.frombuffer(shot.bgra, dtype=_np.uint8).reshape(shot.height, shot.width, 4)
-except Exception:
-    SCREEN_GRAB_AVAILABLE = False
-    _np = None
-
-    def _screen_grab(bbox):
-        return None
+from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
 try:
     import ctypes
     WINDOWS = True
@@ -36,8 +20,6 @@ WS_EX_TRANSPARENT = 32
 WS_EX_TOOLWINDOW = 128
 WS_EX_NOACTIVATE = 134217728
 GWL_EXSTYLE = -20
-GWL_WNDPROC = -4
-DWMWA_EXTENDED_FRAME_BOUNDS = 9
 WM_APP = 32768
 WM_TRAYICON = WM_APP + 1
 WM_LBUTTONUP = 514
@@ -60,25 +42,15 @@ TRAY_EXIT_ID = 1003
 if WINDOWS:
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     shell32 = ctypes.WinDLL('shell32', use_last_error=True)
-    try:
-        dwmapi = ctypes.WinDLL('dwmapi', use_last_error=True)
-    except OSError:
-        dwmapi = None
 else:
     user32 = None
     shell32 = None
-    dwmapi = None
-
-class RECT(ctypes.Structure):
-    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long), ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
 
 class POINT(ctypes.Structure):
     _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
 
 class NOTIFYICONDATA(ctypes.Structure):
     _fields_ = [('cbSize', wintypes.DWORD), ('hWnd', wintypes.HWND), ('uID', wintypes.UINT), ('uFlags', wintypes.UINT), ('uCallbackMessage', wintypes.UINT), ('hIcon', wintypes.HICON), ('szTip', wintypes.WCHAR * 128), ('dwState', wintypes.DWORD), ('dwStateMask', wintypes.DWORD), ('szInfo', wintypes.WCHAR * 256), ('uTimeoutOrVersion', wintypes.UINT), ('szInfoTitle', wintypes.WCHAR * 64), ('dwInfoFlags', wintypes.DWORD), ('guidItem', ctypes.c_byte * 16), ('hBalloonIcon', wintypes.HICON)]
-EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-PM_REMOVE = 1
 WM_QUIT = 18
 _TRAY_CLASS = 'DecypherTrayMsgWnd'
 TrayWndProc = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -89,14 +61,10 @@ class MSG(ctypes.Structure):
 class WNDCLASSEXW(ctypes.Structure):
     _fields_ = [('cbSize', wintypes.UINT), ('style', wintypes.UINT), ('lpfnWndProc', TrayWndProc), ('cbClsExtra', ctypes.c_int), ('cbWndExtra', ctypes.c_int), ('hInstance', wintypes.HINSTANCE), ('hIcon', wintypes.HICON), ('hCursor', wintypes.HANDLE), ('hbrBackground', wintypes.HANDLE), ('lpszMenuName', wintypes.LPCWSTR), ('lpszClassName', wintypes.LPCWSTR), ('hIconSm', wintypes.HICON)]
 if WINDOWS:
-    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
     user32.SetWindowLongW.restype = ctypes.c_long
     user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
     user32.LoadIconW.restype = wintypes.HICON
     user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
-    user32.PeekMessageW.restype = wintypes.BOOL
-    user32.PeekMessageW.argtypes = [ctypes.POINTER(MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
     user32.CreatePopupMenu.restype = wintypes.HMENU
     user32.AppendMenuW.restype = wintypes.BOOL
     user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
@@ -124,26 +92,6 @@ if WINDOWS:
     user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
     user32.DefWindowProcW.restype = ctypes.c_longlong
     user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-_STRIP_X_REGIONS = ((0.8875, 0.9225),)
-_STRIP_Y_MIN = 0.27
-_STRIP_Y_MAX = 0.502
-_STRIP_RGB = (240, 49, 86)
-_STRIP_TOLERANCE = 24
-_STRIP_H_RATIO = 0.68
-_STRIP_RUN_ROWS = 24
-_MENU_X_MIN = 0.43
-_MENU_X_MAX = 0.57
-_MENU_Y_MIN = 0.91
-_MENU_Y_MAX = 0.958
-_MENU_GREEN_RGB = (37, 186, 129)
-_MENU_GREEN_TOLERANCE = 70
-_MENU_H_RATIO = 0.18
-_MENU_H_RUN_ROWS = 2
-_MENU_V_RATIO = 0.18
-_MENU_V_RUN_COLS = 2
-_MENU_WHITE_FILL_RATIO = 0.58
-_MENU_WHITE_FILL_ROWS = 18
-_MENU_RECENT_SECONDS = 2.25
 _SHOOTER_GAME_LOG = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'VALORANT', 'Saved', 'Logs', 'ShooterGame.log')
 _LOG_DEATH_RE = re.compile('LogPlayerController:.*AcknowledgePossession\\([\'\\"]?.+_PostDeath_')
 _LOG_REVIVAL_RE = re.compile('LogPlayerController:.*ClientRestart_Implementation.+_PostDeath_')
@@ -221,16 +169,13 @@ class DecypherOverlay(_OverlayBase):
         self._tray_pump_thread_id = None
         self._log_tailer_stop = threading.Event()
         self._log_tailer_thread = None
+        self.visual_detector = VisualDeathDetector()
         self._strip_outline_wins = {}
         self._strip_outline_bbox = None
         self._strip_outline_last_state = None
         self._strip_outline_visible = False
         self.menu_button_detected = False
         self.last_menu_button_seen_ts = 0.0
-        self._valorant_hwnd = None
-        self._valorant_rect = None
-        self._cached_strip_bboxes = None
-        self._cached_menu_bbox = None
         self.root = tk.Tk()
         self.root.title('Decypher')
         self.root.attributes('-topmost', True)
@@ -752,96 +697,6 @@ class DecypherOverlay(_OverlayBase):
         if self.manual_defers_to_auto and self.death_mute_enabled and self.manual_muted:
             self.manual_muted = False
             self._sync_target_mute()
-
-    def _enum_visible_windows(self):
-        if not WINDOWS:
-            return []
-        results = []
-
-        def callback(hwnd, _lparam):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length <= 0:
-                return True
-            buffer = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buffer, length + 1)
-            title = buffer.value.strip()
-            if title:
-                results.append((hwnd, title))
-            return True
-        user32.EnumWindows(EnumWindowsProc(callback), 0)
-        return results
-
-    def _get_window_rect(self, hwnd):
-        rect = RECT()
-        if dwmapi:
-            try:
-                if dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(DWMWA_EXTENDED_FRAME_BOUNDS), ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
-                    return (rect.left, rect.top, rect.right, rect.bottom)
-            except Exception:
-                pass
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        return (rect.left, rect.top, rect.right, rect.bottom)
-
-    def _find_valorant_window(self):
-        if self._valorant_hwnd:
-            return self._valorant_hwnd
-        for hwnd, title in self._enum_visible_windows():
-            if 'valorant' in title.lower():
-                self._valorant_hwnd = hwnd
-                return hwnd
-        self._valorant_hwnd = None
-        return None
-
-    def _build_strip_bbox(self, rect):
-        left, top, right, bottom = rect
-        width = max(0, right - left)
-        height = max(0, bottom - top)
-        if not width or not height:
-            return None
-        y0 = top + int(round(height * _STRIP_Y_MIN))
-        y1 = top + int(round(height * _STRIP_Y_MAX))
-        bboxes = []
-        for xr0, xr1 in _STRIP_X_REGIONS:
-            x0 = left + int(round(width * xr0))
-            x1 = left + int(round(width * xr1))
-            if x1 > x0:
-                bboxes.append((x0, y0, x1, y1))
-        return bboxes or None
-
-    def _analyze_strip_bbox(self, bboxes):
-        if not SCREEN_GRAB_AVAILABLE or not bboxes:
-            return False
-        tr, tg, tb = _STRIP_RGB
-        tol = _STRIP_TOLERANCE
-        row_ok = None
-        for bb in bboxes:
-            arr = _screen_grab(bb)
-            if arr is None:
-                return False
-            h = arr.shape[0]
-            if row_ok is None:
-                row_ok = _np.ones(h, dtype=bool)
-            else:
-                h = min(h, len(row_ok))
-                row_ok = row_ok[:h]
-            r = arr[:h, :, 2].astype(_np.int16)
-            g = arr[:h, :, 1].astype(_np.int16)
-            b = arr[:h, :, 0].astype(_np.int16)
-            red_mask = (_np.abs(r - tr) <= tol) & (_np.abs(g - tg) <= tol) & (_np.abs(b - tb) <= tol)
-            row_ok &= red_mask.mean(axis=1) >= _STRIP_H_RATIO
-        if row_ok is None:
-            return False
-        run = 0
-        for ok in row_ok[::-1]:
-            if ok:
-                run += 1
-                if run >= _STRIP_RUN_ROWS:
-                    return True
-            else:
-                run = 0
-        return False
     _OUTLINE_HIT = '#39ff14'
     _OUTLINE_MISS = '#ffbf00'
     _OUTLINE_THICKNESS = 3
@@ -899,97 +754,29 @@ class DecypherOverlay(_OverlayBase):
         self._strip_outline_visible = False
         self._strip_outline_last_state = None
 
-    def _build_menu_button_bbox(self, rect):
-        left, top, right, bottom = rect
-        width = max(0, right - left)
-        height = max(0, bottom - top)
-        if not width or not height:
-            return None
-        x0 = left + int(round(width * _MENU_X_MIN))
-        x1 = left + int(round(width * _MENU_X_MAX))
-        y0 = top + int(round(height * _MENU_Y_MIN))
-        y1 = top + int(round(height * _MENU_Y_MAX))
-        return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
-
-    def _analyze_menu_button_bbox(self, bbox):
-        if not SCREEN_GRAB_AVAILABLE or not bbox:
-            return False
-        arr = _screen_grab(bbox)
-        if arr is None:
-            return False
-        tr, tg, tb = _MENU_GREEN_RGB
-        tol = _MENU_GREEN_TOLERANCE
-        r = arr[:, :, 2].astype(_np.int16)
-        g = arr[:, :, 1].astype(_np.int16)
-        b = arr[:, :, 0].astype(_np.int16)
-        green_mask = (g >= r + 35) & (g >= b + 20) & (_np.abs(r - tr) <= tol) & (_np.abs(g - tg) <= tol) & (_np.abs(b - tb) <= tol)
-        run = 0
-        has_h = False
-        for ratio in green_mask.mean(axis=1):
-            run = run + 1 if ratio >= _MENU_H_RATIO else 0
-            if run >= _MENU_H_RUN_ROWS:
-                has_h = True
-                break
-        run = 0
-        has_v = False
-        for ratio in green_mask.mean(axis=0):
-            run = run + 1 if ratio >= _MENU_V_RATIO else 0
-            if run >= _MENU_V_RUN_COLS:
-                has_v = True
-                break
-        raw = arr[:, :, :3]
-        white_mask = (raw[:, :, 2] >= 185) & (raw[:, :, 1] >= 185) & (raw[:, :, 0] >= 175) & (raw.max(axis=2).astype(_np.int16) - raw.min(axis=2).astype(_np.int16) <= 55)
-        run = 0
-        has_white = False
-        for ratio in white_mask.mean(axis=1):
-            run = run + 1 if ratio >= _MENU_WHITE_FILL_RATIO else 0
-            if run >= _MENU_WHITE_FILL_ROWS:
-                has_white = True
-                break
-        return has_h and has_v or has_white
-
     def _menu_seen_recently(self, now=None):
-        now = now or time.time()
-        return self.menu_button_detected or (self.last_menu_button_seen_ts > 0 and now - self.last_menu_button_seen_ts < _MENU_RECENT_SECONDS)
+        return self.visual_detector.menu_seen_recently(now)
 
     def _detect_strip_death(self):
         if self.death_muted:
             self._hide_strip_outline()
             return
-        hwnd = self._find_valorant_window()
-        if not hwnd:
-            self.player_dead = False
-            self.menu_button_detected = False
-            self._valorant_rect = None
-            self._cached_strip_bboxes = None
-            self._cached_menu_bbox = None
+        prev_menu = self.menu_button_detected
+        prev_dead = self.player_dead
+        detection = self.visual_detector.detect(self.death_mute_enabled)
+        self.menu_button_detected = detection.menu_detected
+        self.last_menu_button_seen_ts = self.visual_detector.last_menu_button_seen_ts
+        self.player_dead = detection.player_dead
+        if not detection.window_found:
             self._hide_strip_outline()
             return
-        rect = self._get_window_rect(hwnd)
-        if rect != self._valorant_rect:
-            self._valorant_rect = rect
-            self._cached_strip_bboxes = self._build_strip_bbox(rect)
-            self._cached_menu_bbox = self._build_menu_button_bbox(rect)
-        bboxes = self._cached_strip_bboxes
-        menu_bbox = self._cached_menu_bbox
-        if self.death_mute_enabled:
-            prev_menu = self.menu_button_detected
-            self.menu_button_detected = self._analyze_menu_button_bbox(menu_bbox) if menu_bbox else False
-            if self.menu_button_detected:
-                self.last_menu_button_seen_ts = time.time()
-            if self.menu_button_detected != prev_menu:
-                pass
-        else:
-            self.menu_button_detected = False
-        result = self._analyze_strip_bbox(bboxes) if bboxes else False
-        if self.menu_button_detected:
-            result = False
-        if result != self.player_dead:
+        if self.menu_button_detected != prev_menu:
             pass
-        self.player_dead = result
-        if bboxes:
-            combined = (min((b[0] for b in bboxes)), min((b[1] for b in bboxes)), max((b[2] for b in bboxes)), max((b[3] for b in bboxes)))
-            self._show_strip_outline(combined, result)
+        if self.player_dead != prev_dead:
+            pass
+        combined = detection.combined_strip_bbox
+        if combined:
+            self._show_strip_outline(combined, self.player_dead)
         else:
             self._hide_strip_outline()
 
@@ -1083,10 +870,7 @@ class DecypherOverlay(_OverlayBase):
             self.clove_ult_detected = False
             self.menu_button_detected = False
             self.last_menu_button_seen_ts = 0.0
-            self._valorant_hwnd = None
-            self._valorant_rect = None
-            self._cached_strip_bboxes = None
-            self._cached_menu_bbox = None
+            self.visual_detector.reset()
             self._hide_strip_outline()
             self._track_live_score_transition(False)
             self._apply_death_mute(False)
