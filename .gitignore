@@ -41,6 +41,9 @@ report_card*.png
 valorant_ult.png
 white_button.png
 
+# Local scratch assets
+icons/
+
 # Local secrets / machine-specific files
 .env
 *.env

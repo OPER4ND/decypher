@@ -15,6 +15,7 @@ from tray_icon import TrayIcon
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
 from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwindow, user32
+APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
 
 class DecypherOverlay(_OverlayBase):
     DEFAULT_HOTKEYS = DEFAULT_HOTKEYS
@@ -31,6 +32,7 @@ class DecypherOverlay(_OverlayBase):
         self.agent_select = None
         self._drag_data = {'x': 0, 'y': 0}
         self.config_path = os.path.join(self._runtime_base_dir(), 'decypher_config.json')
+        self.app_icon_path = os.path.join(self._resource_base_dir(), APP_ICON_RELATIVE_PATH)
         self.hotkeys = self._load_hotkeys()
         self.hide_show_hotkey = self.hotkeys['hide_show']
         self.click_through_hotkey = self.hotkeys['click_through']
@@ -83,17 +85,36 @@ class DecypherOverlay(_OverlayBase):
         self._strip_outline_visible = False
         self.menu_button_detected = False
         self.last_menu_button_seen_ts = 0.0
+        self.window_width = 320
+        self._create_root_window()
+        self._create_app_services()
+        self._build_main_window()
+        self._start_background_tasks()
+        self._bind_root_events()
+        self.root.after(300, self._apply_default_state)
+
+    def _create_root_window(self):
         self.root = tk.Tk()
         self.root.title('Decypher')
+        self._apply_app_icon()
         self.root.attributes('-topmost', True)
         self.root.attributes('-alpha', 0.92)
         self.root.overrideredirect(True)
         self.root.configure(bg='#0d1117')
-        self.tray_icon = TrayIcon(root=self.root, is_visible=lambda: self.visible, is_click_through=lambda: self.click_through, on_toggle_visibility=self._toggle_tray_visibility, on_toggle_click_through=self.toggle_click_through, on_exit=self.close)
+        self.root.geometry(f'{self.window_width}x1+0+50')
+
+    def _create_app_services(self):
+        self.tray_icon = TrayIcon(root=self.root, is_visible=lambda: self.visible, is_click_through=lambda: self.click_through, on_toggle_visibility=self._toggle_tray_visibility, on_toggle_click_through=self.toggle_click_through, on_exit=self.close, icon_path=self.app_icon_path)
         self.agent_select = AgentSelectCoordinator(api=self.api, root=self.root, can_preload=self._can_preload_agent_select)
         self.game_log_tailer = GameLogTailer(root=self.root, on_death=self._on_log_death, on_revival=self._on_log_revival, on_clove_ult_window=self._on_log_clove_ult_window, on_clove_ult_used=self._on_log_clove_ult_used)
-        self.window_width = 320
-        self.root.geometry(f'{self.window_width}x1+0+50')
+
+    def _build_main_window(self):
+        self._build_header()
+        self._build_footer()
+        self._position_main_window()
+        self.root.withdraw()
+
+    def _build_header(self):
         self.header = tk.Frame(self.root, bg='#161b22')
         self.header.pack(fill='x')
         title_row = tk.Frame(self.header, bg='#161b22')
@@ -112,27 +133,35 @@ class DecypherOverlay(_OverlayBase):
         close_btn.bind('<Leave>', lambda _event: close_btn.configure(fg='#8b949e'))
         self.status_label = tk.Label(self.header, text='Waiting for Valorant...', font=(self.FONT_FAMILY, 11), fg='#8b949e', bg='#161b22', anchor='center')
         self.status_label.pack(fill='x', padx=10)
-        for widget in [self.header, title_row, title, self.status_label]:
+        self._bind_drag_widgets(self.header, title_row, title, self.status_label)
+
+    def _bind_drag_widgets(self, *widgets):
+        for widget in widgets:
             widget.configure(cursor='fleur')
             widget.bind('<Button-1>', self.on_drag_start)
             widget.bind('<B1-Motion>', self.on_drag_motion)
+
+    def _build_footer(self):
         footer = tk.Frame(self.root, bg='#161b22')
         footer.pack(fill='x', side='bottom')
         hints_frame = tk.Frame(footer, bg='#161b22')
         hints_frame.pack(fill='x', padx=10, pady=(8, 6))
         self._build_hotkey_controls(hints_frame)
         if AUDIO_AVAILABLE:
-            toggle_frame = tk.Frame(footer, bg='#161b22')
-            toggle_frame.pack(fill='x', padx=10, pady=(0, 10))
-            self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
-            self.mute_toggle.pack(anchor='w')
-            self.mute_toggle.bind('<Button-1>', self.toggle_death_mute)
-            self.mute_status = tk.Label(toggle_frame, text='disabled', font=(self.FONT_FAMILY, 10), fg='#6e7681', bg='#161b22')
-            self.defer_toggle = tk.Label(toggle_frame, text='[   ] Manual defers to round', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
-            self.defer_toggle.pack(anchor='w')
-            self.defer_toggle.bind('<Button-1>', self.toggle_manual_defers_to_auto)
-        self._position_main_window()
-        self.root.withdraw()
+            self._build_audio_controls(footer)
+
+    def _build_audio_controls(self, footer):
+        toggle_frame = tk.Frame(footer, bg='#161b22')
+        toggle_frame.pack(fill='x', padx=10, pady=(0, 10))
+        self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
+        self.mute_toggle.pack(anchor='w')
+        self.mute_toggle.bind('<Button-1>', self.toggle_death_mute)
+        self.mute_status = tk.Label(toggle_frame, text='disabled', font=(self.FONT_FAMILY, 10), fg='#6e7681', bg='#161b22')
+        self.defer_toggle = tk.Label(toggle_frame, text='[   ] Manual defers to round', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
+        self.defer_toggle.pack(anchor='w')
+        self.defer_toggle.bind('<Button-1>', self.toggle_manual_defers_to_auto)
+
+    def _start_background_tasks(self):
         if WINDOWS:
             self.root.after(100, self._apply_overlay_styles)
             self.root.after(120, self._create_strip_outline)
@@ -144,9 +173,10 @@ class DecypherOverlay(_OverlayBase):
         if WINDOWS:
             self.hotkey_thread = threading.Thread(target=self.hotkey_listener, daemon=True)
             self.hotkey_thread.start()
+
+    def _bind_root_events(self):
         self.root.bind('<KeyPress>', self._handle_hotkey_capture)
         self.root.bind('<Escape>', self._handle_escape)
-        self.root.after(300, self._apply_default_state)
 
     def _apply_default_state(self):
         if AUDIO_AVAILABLE:
@@ -170,6 +200,18 @@ class DecypherOverlay(_OverlayBase):
         if getattr(sys, 'frozen', False):
             return os.path.dirname(os.path.abspath(sys.argv[0]))
         return os.path.dirname(os.path.abspath(__file__))
+
+    @staticmethod
+    def _resource_base_dir() -> str:
+        return getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+    def _apply_app_icon(self):
+        if not os.path.exists(self.app_icon_path):
+            return
+        try:
+            self.root.iconbitmap(self.app_icon_path)
+        except Exception as exc:
+            pass
 
     def _load_hotkeys(self):
         hotkeys = dict(self.DEFAULT_HOTKEYS)

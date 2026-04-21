@@ -16,6 +16,9 @@ NIF_MESSAGE = 0x00000001
 NIF_ICON = 0x00000002
 NIF_TIP = 0x00000004
 IDI_APPLICATION = 32512
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x00000010
+LR_DEFAULTSIZE = 0x00000040
 MF_STRING = 0x00000000
 MF_SEPARATOR = 0x00000800
 TPM_RIGHTBUTTON = 0x00000002
@@ -104,6 +107,17 @@ class WNDCLASSEXW(ctypes.Structure):
 if WINDOWS:
     user32.LoadIconW.restype = wintypes.HICON
     user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.LoadImageW.argtypes = [
+        wintypes.HINSTANCE,
+        wintypes.LPCWSTR,
+        wintypes.UINT,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.DestroyIcon.restype = wintypes.BOOL
+    user32.DestroyIcon.argtypes = [wintypes.HICON]
     user32.CreatePopupMenu.restype = wintypes.HMENU
     user32.AppendMenuW.restype = wintypes.BOOL
     user32.AppendMenuW.argtypes = [
@@ -185,6 +199,7 @@ class TrayIcon:
         on_exit,
         log,
         tooltip="Decypher",
+        icon_path=None,
     ):
         self.root = root
         self.is_visible = is_visible
@@ -194,8 +209,11 @@ class TrayIcon:
         self.on_exit = on_exit
         self.log = log
         self.tooltip = tooltip
+        self.icon_path = icon_path
 
         self.hwnd = None
+        self.hicon = None
+        self.owns_hicon = False
         self.icon_added = False
         self.wndproc = None
         self.menu_hwnd = None
@@ -235,7 +253,37 @@ class TrayIcon:
                 pass
             self.pump_thread_id = None
         self.hwnd = None
+        self._destroy_icon()
         self.wndproc = None
+
+    def _load_icon(self):
+        if self.icon_path:
+            try:
+                hicon = user32.LoadImageW(
+                    None,
+                    self.icon_path,
+                    IMAGE_ICON,
+                    0,
+                    0,
+                    LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                )
+                if hicon:
+                    self.owns_hicon = True
+                    return hicon
+                self.log(f"tray_icon_load_failed error={ctypes.get_last_error()}")
+            except Exception as exc:
+                self.log(f"tray_icon_load_failed error={exc}")
+        self.owns_hicon = False
+        return user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
+
+    def _destroy_icon(self):
+        if self.hicon and self.owns_hicon:
+            try:
+                user32.DestroyIcon(self.hicon)
+            except Exception:
+                pass
+        self.hicon = None
+        self.owns_hicon = False
 
     def _pump(self):
         """Dedicated background message pump for the tray icon."""
@@ -305,7 +353,8 @@ class TrayIcon:
             notify_data.uID = TRAY_UID
             notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
             notify_data.uCallbackMessage = WM_TRAYICON
-            notify_data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
+            self.hicon = self._load_icon()
+            notify_data.hIcon = self.hicon
             notify_data.szTip = self.tooltip
 
             if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(notify_data)):
@@ -342,6 +391,7 @@ class TrayIcon:
                     user32.UnregisterClassW(_TRAY_CLASS, hinstance)
                 except Exception:
                     pass
+            self._destroy_icon()
             self.hwnd = None
             self.wndproc = None
             self.pump_thread_id = None
