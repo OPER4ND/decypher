@@ -147,6 +147,8 @@ class ValorantLocalAPI:
 
     _CLIENT_VERSION_TTL  = 3600.0   # re-fetch at most once per hour
     _REMOTE_HEADERS_TTL  = 60.0    # access token valid for minutes; refresh every 60s
+    _LOCAL_REQUEST_TIMEOUT = 2.0
+    _GLZ_REQUEST_TIMEOUT = 4.0
 
     def __init__(self):
         self.session = requests.Session()
@@ -319,7 +321,9 @@ class ValorantLocalAPI:
         try:
             response = self.session.request(
                 method, f"{self.base_url}{endpoint}",
-                headers=self.headers, verify=False,
+                headers=self.headers,
+                verify=False,
+                timeout=self._LOCAL_REQUEST_TIMEOUT,
             )
             return response.json() if response.status_code == 200 else None
         except Exception:
@@ -329,7 +333,14 @@ class ValorantLocalAPI:
         try:
             headers = self._get_remote_headers()
             url = f"https://glz-{self.region}-1.{self.shard}.a.pvp.net{endpoint}"
-            response = self.session.request(method, url, headers=headers, json=data, verify=False)
+            response = self.session.request(
+                method,
+                url,
+                headers=headers,
+                json=data,
+                verify=False,
+                timeout=self._GLZ_REQUEST_TIMEOUT,
+            )
             if response.status_code in {200, 204}:
                 return response.json() if response.text else {"success": True}
         except Exception:

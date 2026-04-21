@@ -83,7 +83,7 @@ class AgentSelectOverlay(_OverlayBase):
         title.pack(side="left")
 
         close_btn = tk.Label(
-            title_row, text="X", font=(self.FONT_FAMILY, 16),
+            title_row, text="X", font=(self.FONT_FAMILY, 13),
             fg="#8b949e", bg="#161b22", cursor="hand2",
         )
         close_btn.pack(side="right", padx=4)

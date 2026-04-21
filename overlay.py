@@ -195,7 +195,7 @@ class DecypherOverlay(_OverlayBase):
         self.click_through_btn = tk.Label(btn_frame, text='🖱', font=(self.FONT_FAMILY, 12), fg='#8b949e', bg='#161b22', cursor='hand2')
         self.click_through_btn.pack(side='left', padx=4)
         self.click_through_btn.bind('<Button-1>', self.toggle_click_through)
-        close_btn = tk.Label(btn_frame, text='X', font=(self.FONT_FAMILY, 16), fg='#8b949e', bg='#161b22', cursor='hand2')
+        close_btn = tk.Label(btn_frame, text='X', font=(self.FONT_FAMILY, 13), fg='#8b949e', bg='#161b22', cursor='hand2')
         close_btn.pack(side='left', padx=4)
         close_btn.bind('<Button-1>', lambda _event: self.close())
         close_btn.bind('<Enter>', lambda _event: close_btn.configure(fg='#f85149'))
@@ -215,12 +215,11 @@ class DecypherOverlay(_OverlayBase):
             toggle_frame = tk.Frame(footer, bg='#161b22')
             toggle_frame.pack(fill='x', padx=10, pady=(0, 10))
             self.mute_toggle = tk.Label(toggle_frame, text='[   ] Mute on Death', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
-            self.mute_toggle.pack(anchor='center')
+            self.mute_toggle.pack(anchor='w')
             self.mute_toggle.bind('<Button-1>', self.toggle_death_mute)
             self.mute_status = tk.Label(toggle_frame, text='disabled', font=(self.FONT_FAMILY, 10), fg='#6e7681', bg='#161b22')
-            self.mute_status.pack(anchor='center')
             self.defer_toggle = tk.Label(toggle_frame, text='[   ] Manual defers to round', font=(self.FONT_FAMILY, 11), fg='#c9d1d9', bg='#161b22', cursor='hand2')
-            self.defer_toggle.pack(anchor='center')
+            self.defer_toggle.pack(anchor='w')
             self.defer_toggle.bind('<Button-1>', self.toggle_manual_defers_to_auto)
         self._position_main_window()
         self.root.withdraw()
@@ -241,7 +240,7 @@ class DecypherOverlay(_OverlayBase):
 
     def _apply_default_state(self):
         self.death_mute_enabled = True
-        self.mute_toggle.configure(text='[ x ] Mute on Death', fg='#3fb950')
+        self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
         self.mute_status.configure(text='armed', fg='#3fb950')
         self.click_through = True
         self.click_through_btn.configure(fg='#58a6ff')
@@ -642,7 +641,7 @@ class DecypherOverlay(_OverlayBase):
             self.startup_revival_since = None
             if self.startup_revive_gate:
                 self.last_score_poll_ts = 0.0
-            self.mute_toggle.configure(text='[ x ] Mute on Death', fg='#3fb950')
+            self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
             if menu_recent:
                 self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
             elif self.revive_gate:
@@ -686,7 +685,7 @@ class DecypherOverlay(_OverlayBase):
     def _refresh_defer_toggle_style(self):
         checked = self.manual_defers_to_auto
         active = self.death_mute_enabled
-        text = '[ x ] Manual defers to round' if checked else '[   ] Manual defers to round'
+        text = '[ X ] Manual defers to round' if checked else '[   ] Manual defers to round'
         if checked:
             fg = '#3fb950' if active else '#2d5c38'
         else:
