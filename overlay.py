@@ -1,7 +1,6 @@
 """Decypher overlay for Valorant agent-select actions and death muting."""
 import json
 import os
-import re
 import signal
 import sys
 import threading
@@ -9,17 +8,13 @@ import time
 import tkinter as tk
 from agent_select import _OverlayBase
 from agent_select_coordinator import AgentSelectCoordinator
+from game_log import GameLogTailer
 from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
 from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
 from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
 from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwindow, user32
-_SHOOTER_GAME_LOG = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'VALORANT', 'Saved', 'Logs', 'ShooterGame.log')
-_LOG_DEATH_RE = re.compile('LogPlayerController:.*AcknowledgePossession\\([\'\\"]?.+_PostDeath_')
-_LOG_REVIVAL_RE = re.compile('LogPlayerController:.*ClientRestart_Implementation.+_PostDeath_')
-_LOG_CLOVE_ULT_WINDOW_RE = re.compile('LogAbilitySystem:.*ReactiveRes_InDeathCastWindow_C')
-_LOG_CLOVE_ULT_USED_RE = re.compile('LogAbilitySystem:.*DelayDeathUltPointReward_C')
 
 class DecypherOverlay(_OverlayBase):
     DEFAULT_HOTKEYS = DEFAULT_HOTKEYS
@@ -81,8 +76,6 @@ class DecypherOverlay(_OverlayBase):
         self.clove_ult_pending_until = 0.0
         self.clove_ult_pending_score_total = None
         self.clove_ult_pending_seconds = 2.5
-        self._log_tailer_stop = threading.Event()
-        self._log_tailer_thread = None
         self.visual_detector = VisualDeathDetector()
         self._strip_outline_wins = {}
         self._strip_outline_bbox = None
@@ -98,6 +91,7 @@ class DecypherOverlay(_OverlayBase):
         self.root.configure(bg='#0d1117')
         self.tray_icon = TrayIcon(root=self.root, is_visible=lambda: self.visible, is_click_through=lambda: self.click_through, on_toggle_visibility=self._toggle_tray_visibility, on_toggle_click_through=self.toggle_click_through, on_exit=self.close)
         self.agent_select = AgentSelectCoordinator(api=self.api, root=self.root, can_preload=self._can_preload_agent_select)
+        self.game_log_tailer = GameLogTailer(root=self.root, on_death=self._on_log_death, on_revival=self._on_log_revival, on_clove_ult_window=self._on_log_clove_ult_window, on_clove_ult_used=self._on_log_clove_ult_used)
         self.window_width = 320
         self.root.geometry(f'{self.window_width}x1+0+50')
         self.header = tk.Frame(self.root, bg='#161b22')
@@ -482,43 +476,7 @@ class DecypherOverlay(_OverlayBase):
             self._hide_strip_outline()
 
     def _start_log_tailer(self):
-        self._log_tailer_thread = threading.Thread(target=self._log_tail_worker, daemon=True)
-        self._log_tailer_thread.start()
-
-    def _log_tail_worker(self):
-        log_path = _SHOOTER_GAME_LOG
-        while not self._log_tailer_stop.is_set():
-            try:
-                if not os.path.exists(log_path):
-                    self._log_tailer_stop.wait(5)
-                    continue
-                with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                    f.seek(0, 2)
-                    idle_ticks = 0
-                    while not self._log_tailer_stop.is_set():
-                        line = f.readline()
-                        if not line:
-                            idle_ticks += 1
-                            if idle_ticks >= 40:
-                                idle_ticks = 0
-                                try:
-                                    if os.path.getsize(log_path) < f.tell():
-                                        break
-                                except OSError:
-                                    break
-                            self._log_tailer_stop.wait(0.05)
-                            continue
-                        idle_ticks = 0
-                        if _LOG_DEATH_RE.search(line):
-                            self.root.after(0, self._on_log_death)
-                        elif _LOG_REVIVAL_RE.search(line):
-                            self.root.after(0, self._on_log_revival)
-                        elif _LOG_CLOVE_ULT_WINDOW_RE.search(line):
-                            self.root.after(0, self._on_log_clove_ult_window)
-                        elif _LOG_CLOVE_ULT_USED_RE.search(line):
-                            self.root.after(0, self._on_log_clove_ult_used)
-            except Exception:
-                self._log_tailer_stop.wait(2)
+        self.game_log_tailer.start()
 
     def _on_log_death(self):
         if not self.running:
@@ -1011,7 +969,7 @@ class DecypherOverlay(_OverlayBase):
         self.update_presence_panel('Menu', 'none')
 
     def close(self):
-        self._log_tailer_stop.set()
+        self.game_log_tailer.stop()
         self._remove_tray_icon()
         if self.death_muted or self.manual_muted:
             self.death_muted = False
