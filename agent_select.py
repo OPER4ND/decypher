@@ -209,7 +209,7 @@ class AgentSelectOverlay:
         try:
             btn.configure(image=photo, text="", width=40, height=40, compound="center")
             btn.image = photo  # Keep reference
-        except:
+        except Exception:
             pass
 
     def _refresh_agent_grid(self):
