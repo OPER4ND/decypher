@@ -1,15 +1,14 @@
 """Minimal Valorant local/GLZ API client used by Decypher."""
 
 import base64
-import json
 import os
-import time
 
 import requests
 import urllib3
 
 from agent_catalog import AgentCatalog
 from presence_score import round_score_total_from_presences
+from valorant_remote import ValorantRemoteClient, extract_puuid_from_access_token
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -73,12 +72,7 @@ def mute_valorant(mute: bool = True) -> bool:
 
 
 class ValorantLocalAPI:
-    KNOWN_SHARDS = {"na", "latam", "br", "eu", "ap", "kr", "pbe"}
-
-    _CLIENT_VERSION_TTL  = 3600.0   # re-fetch at most once per hour
-    _REMOTE_HEADERS_TTL  = 60.0    # access token valid for minutes; refresh every 60s
     _LOCAL_REQUEST_TIMEOUT = 2.0
-    _GLZ_REQUEST_TIMEOUT = 4.0
 
     def __init__(self):
         self.session = requests.Session()
@@ -95,15 +89,10 @@ class ValorantLocalAPI:
         self.headers = None
         self.base_url = None
         self.puuid = None
-        self.region = None
-        self.shard = None
+        self.remote = ValorantRemoteClient(self.session, self._request)
         self.agent_catalog = AgentCatalog()
 
         self._lockfile_mtime = None
-        self._client_version_cache = None
-        self._client_version_ts = 0.0
-        self._remote_headers_cache = None
-        self._remote_headers_ts = 0.0
 
     def is_game_running(self) -> bool:
         return os.path.exists(self.lockfile_path)
@@ -128,7 +117,7 @@ class ValorantLocalAPI:
                 "Content-Type": "application/json",
             }
             self._lockfile_mtime = mtime
-            self._remote_headers_cache = None  # force token refresh on reconnect
+            self.remote.reset_headers()
             reset_audio_session_cache()
             self._get_local_player_info()
             return True
@@ -167,62 +156,7 @@ class ValorantLocalAPI:
             return None
 
     def _glz_request(self, endpoint: str, method: str = "GET", data: dict = None) -> dict | None:
-        try:
-            headers = self._get_remote_headers()
-            url = f"https://glz-{self.region}-1.{self.shard}.a.pvp.net{endpoint}"
-            response = self.session.request(
-                method,
-                url,
-                headers=headers,
-                json=data,
-                verify=False,
-                timeout=self._GLZ_REQUEST_TIMEOUT,
-            )
-            if response.status_code in {200, 204}:
-                return response.json() if response.text else {"success": True}
-        except Exception:
-            return None
-        return None
-
-    def _get_remote_headers(self) -> dict:
-        now = time.time()
-        if self._remote_headers_cache and (now - self._remote_headers_ts) < self._REMOTE_HEADERS_TTL:
-            return self._remote_headers_cache
-
-        entitlements = self._request("/entitlements/v1/token") or {}
-        access_token = entitlements.get("accessToken", "")
-        inferred_shard = self._extract_shard_from_access_token(access_token)
-        if inferred_shard:
-            self.shard = inferred_shard
-            if not self.region or self.region == "na":
-                self.region = inferred_shard
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "X-Riot-Entitlements-JWT": entitlements.get("token", ""),
-            "X-Riot-ClientPlatform": "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9",
-            "X-Riot-ClientVersion": self._get_client_version(),
-            "Content-Type": "application/json",
-        }
-        self._remote_headers_cache = headers
-        self._remote_headers_ts = now
-        return headers
-
-    def _get_client_version(self) -> str:
-        now = time.time()
-        if self._client_version_cache and (now - self._client_version_ts) < self._CLIENT_VERSION_TTL:
-            return self._client_version_cache
-        try:
-            response = self.session.get("https://valorant-api.com/v1/version", timeout=5)
-            if response.status_code == 200:
-                version = response.json()["data"]["riotClientVersion"]
-                self._client_version_cache = version
-                self._client_version_ts = now
-                return version
-        except Exception:
-            pass
-        # Return stale cache if available rather than the hardcoded fallback
-        return self._client_version_cache or "release-09.00-shipping-27-2548652"
+        return self.remote.request(endpoint, method, data)
 
     def _get_local_player_info(self):
         session = self._request("/chat/v1/session")
@@ -231,7 +165,7 @@ class ValorantLocalAPI:
 
         if not self.puuid:
             entitlements = self._request("/entitlements/v1/token") or {}
-            self.puuid = self._extract_puuid_from_access_token(entitlements.get("accessToken", ""))
+            self.puuid = extract_puuid_from_access_token(entitlements.get("accessToken", ""))
 
         product_session = self._request("/product-session/v1/external-sessions")
         if product_session:
@@ -241,47 +175,31 @@ class ValorantLocalAPI:
                 launch_args = value.get("launchConfiguration", {}).get("arguments", [])
                 for arg in launch_args:
                     if "-ares-deployment=" in arg:
-                        self.region = arg.split("=")[1]
+                        self.remote.region = arg.split("=")[1]
                     if "-config-endpoint=" in arg:
                         endpoint = arg.split("=")[1]
                         if "pbe" in endpoint:
-                            self.shard = "pbe"
+                            self.remote.shard = "pbe"
                         elif ".eu." in endpoint:
-                            self.shard = "eu"
+                            self.remote.shard = "eu"
                         elif ".ap." in endpoint:
-                            self.shard = "ap"
+                            self.remote.shard = "ap"
                         elif ".kr." in endpoint:
-                            self.shard = "kr"
+                            self.remote.shard = "kr"
                         else:
-                            self.shard = "na"
+                            self.remote.shard = "na"
                 break
 
-        self.region = self.region or "na"
-        self.shard = self.shard or "na"
+        self.remote.region = self.remote.region or "na"
+        self.remote.shard = self.remote.shard or "na"
 
-    def _extract_puuid_from_access_token(self, token: str) -> str | None:
-        payload = self._decode_jwt_payload(token)
-        subject = payload.get("sub")
-        return subject if isinstance(subject, str) and subject else None
+    @property
+    def region(self):
+        return self.remote.region
 
-    def _extract_shard_from_access_token(self, token: str) -> str | None:
-        payload = self._decode_jwt_payload(token)
-        for parent in ("pp", "dat"):
-            candidate = payload.get(parent, {}).get("c")
-            if candidate in self.KNOWN_SHARDS:
-                return candidate
-        return None
-
-    def _decode_jwt_payload(self, token: str) -> dict:
-        if not token or token.count(".") < 2:
-            return {}
-
-        try:
-            payload = token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            return json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
-        except Exception:
-            return {}
+    @property
+    def shard(self):
+        return self.remote.shard
 
     def get_presences(self) -> list:
         data = self._request("/chat/v4/presences")
