@@ -1,7 +1,6 @@
 """Minimal Valorant local/GLZ API client used by Decypher."""
 
 import base64
-import binascii
 import json
 import os
 import time
@@ -10,6 +9,7 @@ import requests
 import urllib3
 
 from agent_catalog import AgentCatalog
+from presence_score import round_score_total_from_presences
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -288,26 +288,7 @@ class ValorantLocalAPI:
         return data.get("presences", []) if data else []
 
     def get_round_score_total(self) -> int | None:
-        for presence in self.get_presences():
-            if presence.get("puuid") != self.puuid:
-                continue
-
-            private_b64 = presence.get("private")
-            if not private_b64:
-                continue
-
-            try:
-                decoded = base64.b64decode(private_b64).decode("utf-8", errors="ignore")
-                private_data = json.loads(decoded)
-            except (ValueError, binascii.Error, UnicodeDecodeError):
-                continue
-
-            ally = private_data.get("partyOwnerMatchScoreAllyTeam")
-            enemy = private_data.get("partyOwnerMatchScoreEnemyTeam")
-            if isinstance(ally, int) and isinstance(enemy, int):
-                return ally + enemy
-
-        return None
+        return round_score_total_from_presences(self.get_presences(), self.puuid)
 
     def get_coregame_match(self) -> dict | None:
         match_info = self._glz_request(f"/core-game/v1/players/{self.puuid}")
