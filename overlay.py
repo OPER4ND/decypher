@@ -374,38 +374,31 @@ class DecypherOverlay(_OverlayBase):
         now = time.time()
         self.mute_armed_ts = now
         menu_recent = self._menu_seen_recently(now)
-        self.revive_gate = bool(force_startup_gate or self.player_dead or menu_recent)
-        self.startup_revive_gate = self.revive_gate
-        self.startup_score_baseline = None
-        self.startup_revival_since = None
-        if self.startup_revive_gate:
-            self.last_score_poll_ts = 0.0
+        needs_startup_gate = bool(force_startup_gate or self.player_dead or menu_recent)
+        if needs_startup_gate:
+            self._begin_startup_gate()
+        else:
+            self.revive_gate = False
+            self._clear_startup_gate()
         self.mute_toggle.configure(text='[ X ] Mute on Death', fg='#3fb950')
         if menu_recent:
-            self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+            self._set_waiting_status('waiting for menu to close')
         elif force_startup_gate:
-            self.mute_status.configure(text='waiting for live state', fg='#d29922')
+            self._set_waiting_status('waiting for live state')
         elif self.revive_gate:
-            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+            self._set_waiting_status('waiting for revival')
         else:
-            self.mute_status.configure(text='armed', fg='#3fb950')
+            self._set_armed_status()
         self._refresh_defer_toggle_style()
 
     def _disable_death_mute(self):
         self.auto_death_mute_pending = False
         self.death_mute_enabled = False
         self.mute_toggle.configure(text='[   ] Mute on Death', fg='#c9d1d9')
-        self.mute_status.configure(text='disabled', fg='#6e7681')
+        self._set_mute_status('disabled', '#6e7681')
         if self.death_muted:
             self._release_death_mute()
-        self.revive_gate = False
-        self.startup_revive_gate = False
-        self.startup_score_baseline = None
-        self.startup_revival_since = None
-        self.clove_ult_pending_until = 0.0
-        self.clove_ult_pending_score_total = None
-        self.mute_armed_ts = 0.0
-        self.score_total_at_mute = None
+        self._clear_death_mute_gates()
         self._refresh_defer_toggle_style()
 
     def toggle_manual_mute(self, event=None):
@@ -440,6 +433,52 @@ class DecypherOverlay(_OverlayBase):
         if self.manual_defers_to_auto and self.death_mute_enabled and self.manual_muted:
             self.manual_muted = False
             self._sync_target_mute()
+
+    def _set_mute_status(self, text: str, fg: str):
+        self.mute_status.configure(text=text, fg=fg)
+
+    def _set_armed_status(self):
+        self._set_mute_status('armed', '#3fb950')
+
+    def _set_waiting_status(self, text: str):
+        self._set_mute_status(text, '#d29922')
+
+    def _set_muted_status(self, text: str):
+        self._set_mute_status(text, '#f85149')
+
+    def _set_round_start_cooldown_status(self, prefix: str='round-start cooldown'):
+        self._set_waiting_status(f'{prefix} {int(self.round_start_cooldown_seconds)}s')
+
+    def _clear_startup_gate(self):
+        self.startup_revive_gate = False
+        self.startup_score_baseline = None
+        self.startup_revival_since = None
+
+    def _begin_startup_gate(self):
+        self.revive_gate = True
+        self.startup_revive_gate = True
+        self.startup_score_baseline = None
+        self.startup_revival_since = None
+        self.last_score_poll_ts = 0.0
+
+    def _clear_clove_ult_wait(self, clear_ready_ts: bool=False):
+        self.clove_ult_pending_until = 0.0
+        self.clove_ult_pending_score_total = None
+        if clear_ready_ts:
+            self.clove_ult_last_ready_ts = 0.0
+
+    def _clear_round_start_gate(self, clear_cooldown: bool=False):
+        if clear_cooldown:
+            self.round_start_cooldown_until = 0.0
+        self.round_start_requires_clear = False
+        self.round_start_clear_since = None
+
+    def _clear_death_mute_gates(self):
+        self.revive_gate = False
+        self._clear_startup_gate()
+        self._clear_clove_ult_wait()
+        self.mute_armed_ts = 0.0
+        self.score_total_at_mute = None
     _OUTLINE_HIT = '#39ff14'
     _OUTLINE_MISS = '#ffbf00'
     _OUTLINE_THICKNESS = 3
@@ -575,19 +614,15 @@ class DecypherOverlay(_OverlayBase):
             self._hide_strip_outline()
             self._track_live_score_transition(False)
             if self.auto_death_mute_pending and self.death_mute_enabled and (not self.death_muted):
-                self.mute_status.configure(text='waiting for live match', fg='#d29922')
+                self._set_waiting_status('waiting for live match')
             else:
                 self._apply_death_mute(False)
             self.root.after(100, self._refresh_death_detection_loop)
             return
         if self.auto_death_mute_pending:
             self.auto_death_mute_pending = False
-            self.revive_gate = True
-            self.startup_revive_gate = True
-            self.startup_score_baseline = None
-            self.startup_revival_since = None
-            self.last_score_poll_ts = 0.0
-            self.mute_status.configure(text='checking live state', fg='#d29922')
+            self._begin_startup_gate()
+            self._set_waiting_status('checking live state')
         is_clove = self._is_current_agent_clove()
         if not is_clove:
             self._detect_strip_death()
@@ -652,7 +687,7 @@ class DecypherOverlay(_OverlayBase):
                 self.revive_gate = True
                 self.round_start_clear_since = None
             remaining = max(1, int(self.round_start_cooldown_until - now))
-            self.mute_status.configure(text=f'round-start cooldown {remaining}s', fg='#d29922')
+            self._set_waiting_status(f'round-start cooldown {remaining}s')
             if self.player_dead and now - self.last_cooldown_block_log_ts >= 2.0:
                 self.last_cooldown_block_log_ts = now
             return True
@@ -665,21 +700,20 @@ class DecypherOverlay(_OverlayBase):
                 pass
             self.revive_gate = True
             self.round_start_clear_since = None
-            self.mute_status.configure(text='waiting for strip clear', fg='#d29922')
+            self._set_waiting_status('waiting for strip clear')
             return True
         self.revive_gate = False
         if self.round_start_clear_since is None:
             self.round_start_clear_since = now
-            self.mute_status.configure(text='confirming strip clear', fg='#d29922')
+            self._set_waiting_status('confirming strip clear')
             return True
         clear_for = now - self.round_start_clear_since
         if clear_for < self.round_start_clear_seconds:
-            self.mute_status.configure(text=f'confirming strip clear {int(clear_for)}s', fg='#d29922')
+            self._set_waiting_status(f'confirming strip clear {int(clear_for)}s')
             return True
-        self.round_start_requires_clear = False
-        self.round_start_clear_since = None
+        self._clear_round_start_gate()
         self.revive_gate = False
-        self.mute_status.configure(text='armed', fg='#3fb950')
+        self._set_armed_status()
         return True
 
     def _apply_clove_ult_gate(self, now):
@@ -689,24 +723,20 @@ class DecypherOverlay(_OverlayBase):
         if score_status == 'baseline':
             self.clove_ult_pending_score_total = baseline_score
         elif score_status == 'changed':
-            self.clove_ult_pending_until = 0.0
-            self.clove_ult_pending_score_total = None
+            self._clear_clove_ult_wait()
             self._begin_round_start_cooldown(now, baseline_score, current_score)
-            self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            self._set_round_start_cooldown_status('score changed; round-start cooldown')
             return True
         if not self.player_dead:
-            self.clove_ult_pending_until = 0.0
-            self.clove_ult_pending_score_total = None
-            self.clove_ult_last_ready_ts = 0.0
+            self._clear_clove_ult_wait(clear_ready_ts=True)
             self.mute_armed_ts = 0.0
-            self.mute_status.configure(text='armed', fg='#3fb950')
+            self._set_armed_status()
             return True
         if now < self.clove_ult_pending_until:
             remaining = max(0.1, self.clove_ult_pending_until - now)
-            self.mute_status.configure(text=f'waiting for Clove ult {remaining:.1f}s', fg='#d29922')
+            self._set_waiting_status(f'waiting for Clove ult {remaining:.1f}s')
             return True
-        self.clove_ult_pending_until = 0.0
-        self.clove_ult_pending_score_total = None
+        self._clear_clove_ult_wait()
         return False
 
     def _track_live_score_transition(self, live_match_active: bool):
@@ -729,7 +759,7 @@ class DecypherOverlay(_OverlayBase):
         if not self.death_muted:
             self._begin_round_start_cooldown(now, previous_score, current_score)
             if self.death_mute_enabled and AUDIO_AVAILABLE:
-                self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+                self._set_round_start_cooldown_status('score changed; round-start cooldown')
 
     def _apply_death_mute(self, live_match_active):
         if not AUDIO_AVAILABLE or not self.death_mute_enabled:
@@ -755,57 +785,46 @@ class DecypherOverlay(_OverlayBase):
             self._on_muted_poll()
 
     def _on_match_end(self):
-        self.revive_gate = False
-        self.startup_revive_gate = False
-        self.startup_score_baseline = None
-        self.startup_revival_since = None
-        self.mute_armed_ts = 0.0
-        self.clove_ult_pending_until = 0.0
-        self.clove_ult_pending_score_total = None
-        self.score_total_at_mute = None
+        self._clear_death_mute_gates()
         self._maybe_clear_deferred_manual()
         if self.death_muted and self._release_death_mute() > 0:
             self._begin_round_start_cooldown()
             status_text = 'death mute released; manual mute still on' if self.manual_muted else 'unmuted (not in live match)'
-            self.mute_status.configure(text=status_text, fg='#3fb950')
+            self._set_mute_status(status_text, '#3fb950')
 
     def _handle_startup_gate(self, now):
         score_status, baseline_score, current_score = self._poll_score_delta(self.startup_score_baseline)
         if not self.player_dead:
             if self._menu_seen_recently(now):
                 self.startup_revival_since = None
-                self.mute_status.configure(text='waiting for menu to close', fg='#d29922')
+                self._set_waiting_status('waiting for menu to close')
                 return
             if self.startup_revival_since is None:
                 self.startup_revival_since = now
-                self.mute_status.configure(text='confirming revival', fg='#d29922')
+                self._set_waiting_status('confirming revival')
             clear_for = now - self.startup_revival_since
             if clear_for >= self.startup_revival_seconds:
-                self.startup_revive_gate = False
-                self.startup_score_baseline = None
-                self.startup_revival_since = None
+                self._clear_startup_gate()
                 self.revive_gate = False
                 self.mute_armed_ts = 0.0
-                self.mute_status.configure(text='armed', fg='#3fb950')
+                self._set_armed_status()
             else:
-                self.mute_status.configure(text=f'confirming revival {int(clear_for)}s', fg='#d29922')
+                self._set_waiting_status(f'confirming revival {int(clear_for)}s')
             return
         self.startup_revival_since = None
         if score_status == 'wait':
-            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+            self._set_waiting_status('waiting for revival')
             return
         if score_status == 'baseline':
             self.startup_score_baseline = baseline_score
             if current_score is not None:
-                self.mute_status.configure(text=f'waiting for revival or score change from {current_score}', fg='#d29922')
+                self._set_waiting_status(f'waiting for revival or score change from {current_score}')
             return
         if score_status == 'changed':
-            self.startup_revive_gate = False
-            self.startup_score_baseline = None
-            self.startup_revival_since = None
+            self._clear_startup_gate()
             self._begin_round_start_cooldown(now, baseline_score, current_score)
             self.mute_armed_ts = 0.0
-            self.mute_status.configure(text=f'round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            self._set_round_start_cooldown_status()
 
     def _on_death_trigger(self, now):
         current_score = self.api.get_round_score_total()
@@ -813,42 +832,36 @@ class DecypherOverlay(_OverlayBase):
             previous_score = self.live_score_total
             self.live_score_total = current_score
             self._begin_round_start_cooldown(now, previous_score, current_score)
-            self.mute_status.configure(text=f'score changed; round-start cooldown {int(self.round_start_cooldown_seconds)}s', fg='#d29922')
+            self._set_round_start_cooldown_status('score changed; round-start cooldown')
             return
         if self.revive_gate:
             return
         if self.mute_armed_ts > 0 and now - self.mute_armed_ts <= self.mute_arm_grace_seconds:
-            self.revive_gate = True
-            self.startup_revive_gate = True
-            self.startup_score_baseline = None
-            self.startup_revival_since = None
-            self.round_start_cooldown_until = 0.0
-            self.round_start_requires_clear = False
-            self.round_start_clear_since = None
-            self.last_score_poll_ts = 0.0
-            self.mute_status.configure(text='waiting for revival', fg='#d29922')
+            self._begin_startup_gate()
+            self._clear_round_start_gate(clear_cooldown=True)
+            self._set_waiting_status('waiting for revival')
             return
         clove_ult_recently_ready = self.clove_ult_detected or now - self.clove_ult_last_ready_ts <= self.clove_ult_ready_grace_seconds
         if self._is_current_agent_clove() and clove_ult_recently_ready:
             self.clove_ult_pending_until = now + self.clove_ult_pending_seconds
             self.clove_ult_pending_score_total = current_score
             self.last_score_poll_ts = 0.0
-            self.mute_status.configure(text=f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s', fg='#d29922')
+            self._set_waiting_status(f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s')
             return
         if self._engage_death_mute() > 0:
             self.mute_armed_ts = 0.0
             self.score_total_at_mute = self.api.get_round_score_total()
             self.last_score_poll_ts = time.time()
             if self.score_total_at_mute is None:
-                self.mute_status.configure(text='muted whole game; waiting for live score', fg='#f85149')
+                self._set_muted_status('muted whole game; waiting for live score')
             else:
-                self.mute_status.configure(text=f'muted whole game; waiting for score change from {self.score_total_at_mute}', fg='#f85149')
+                self._set_muted_status(f'muted whole game; waiting for score change from {self.score_total_at_mute}')
 
     def _on_revive_clear(self):
         self.revive_gate = False
         self.mute_armed_ts = 0.0
         if not self.death_muted:
-            self.mute_status.configure(text='armed', fg='#3fb950')
+            self._set_armed_status()
 
     def _on_muted_poll(self):
         score_status, baseline_score, current_score = self._poll_score_delta(self.score_total_at_mute)
@@ -857,7 +870,7 @@ class DecypherOverlay(_OverlayBase):
         if score_status == 'baseline':
             self.score_total_at_mute = baseline_score
             if current_score is not None:
-                self.mute_status.configure(text=f'muted whole game; waiting for score change from {current_score}', fg='#f85149')
+                self._set_muted_status(f'muted whole game; waiting for score change from {current_score}')
             return
         if score_status == 'changed':
             self.player_dead = False
@@ -867,7 +880,7 @@ class DecypherOverlay(_OverlayBase):
             self.score_total_at_mute = None
             self.mute_armed_ts = 0.0
             status_text = f'death mute released; manual mute still on; cooldown {int(self.round_start_cooldown_seconds)}s' if self.manual_muted else f'unmuted; round-start cooldown {int(self.round_start_cooldown_seconds)}s'
-            self.mute_status.configure(text=status_text, fg='#d29922')
+            self._set_waiting_status(status_text)
 
     def _sync_target_mute(self) -> int:
         return 1 if mute_valorant(self.death_muted or self.manual_muted) else 0
