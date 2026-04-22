@@ -1,13 +1,11 @@
 """Minimal Valorant local/GLZ API client used by Decypher."""
 
-import base64
-import os
-
 import requests
 import urllib3
 
 from agent_catalog import AgentCatalog
 from presence_score import round_score_total_from_presences
+from valorant_local import ValorantLocalClient
 from valorant_remote import ValorantRemoteClient, extract_puuid_from_access_token
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -72,58 +70,32 @@ def mute_valorant(mute: bool = True) -> bool:
 
 
 class ValorantLocalAPI:
-    _LOCAL_REQUEST_TIMEOUT = 2.0
-
     def __init__(self):
         self.session = requests.Session()
         self.session.trust_env = False
-        self.lockfile_path = os.path.join(
-            os.environ["LOCALAPPDATA"],
-            "Riot Games",
-            "Riot Client",
-            "Config",
-            "lockfile",
-        )
-        self.port = None
-        self.password = None
-        self.headers = None
-        self.base_url = None
+        self.local = ValorantLocalClient(self.session)
         self.puuid = None
         self.remote = ValorantRemoteClient(self.session, self._request)
         self.agent_catalog = AgentCatalog()
 
-        self._lockfile_mtime = None
-
     def is_game_running(self) -> bool:
-        return os.path.exists(self.lockfile_path)
+        return self.local.is_game_running()
 
     def connect(self) -> bool:
-        if not self.is_game_running():
-            self._lockfile_mtime = None
+        if not self.local.is_game_running():
+            self.local.lockfile_mtime = None
             return False
 
-        try:
-            mtime = os.path.getmtime(self.lockfile_path)
-            if self.base_url and self.puuid and mtime == self._lockfile_mtime:
-                return True  # already connected, lockfile unchanged
-            with open(self.lockfile_path, "r", encoding="utf-8") as lockfile:
-                data = lockfile.read().split(":")
-            self.port = data[2]
-            self.password = data[3]
-            self.base_url = f"https://127.0.0.1:{self.port}"
-            auth = base64.b64encode(f"riot:{self.password}".encode()).decode()
-            self.headers = {
-                "Authorization": f"Basic {auth}",
-                "Content-Type": "application/json",
-            }
-            self._lockfile_mtime = mtime
-            self.remote.reset_headers()
-            reset_audio_session_cache()
-            self._get_local_player_info()
+        if self.local.has_current_connection() and self.puuid:
             return True
-        except Exception:
-            self._lockfile_mtime = None
+
+        if not self.local.connect():
             return False
+
+        self.remote.reset_headers()
+        reset_audio_session_cache()
+        self._get_local_player_info()
+        return True
 
     def load_agent_catalog_once(self, force: bool = False) -> dict:
         return self.agent_catalog.load_once(self.session, force)
@@ -142,18 +114,7 @@ class ValorantLocalAPI:
         return self.agent_catalog.source
 
     def _request(self, endpoint: str, method: str = "GET") -> dict | None:
-        if not self.base_url or not self.headers:
-            return None
-        try:
-            response = self.session.request(
-                method, f"{self.base_url}{endpoint}",
-                headers=self.headers,
-                verify=False,
-                timeout=self._LOCAL_REQUEST_TIMEOUT,
-            )
-            return response.json() if response.status_code == 200 else None
-        except Exception:
-            return None
+        return self.local.request(endpoint, method)
 
     def _glz_request(self, endpoint: str, method: str = "GET", data: dict = None) -> dict | None:
         return self.remote.request(endpoint, method, data)
