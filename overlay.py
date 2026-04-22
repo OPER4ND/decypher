@@ -627,8 +627,6 @@ class DecypherOverlay(_OverlayBase):
         if not is_clove:
             self._detect_strip_death()
         now_ts = time.time()
-        if now_ts - self._last_debug_dump_ts >= 3.0:
-            pass
         self._track_live_score_transition(live_match_active)
         self._apply_death_mute(live_match_active)
         self.root.after(250 if not is_clove else 100, self._refresh_death_detection_loop)
@@ -688,7 +686,7 @@ class DecypherOverlay(_OverlayBase):
                 self.round_start_clear_since = None
             remaining = max(1, int(self.round_start_cooldown_until - now))
             self._set_waiting_status(f'round-start cooldown {remaining}s')
-            if self.player_dead and now - self.last_cooldown_block_log_ts >= 2.0:
+            if self.player_dead and now - self.last_cooldown_block_log_ts >= 5.0:
                 self.last_cooldown_block_log_ts = now
             return True
         if self.round_start_cooldown_until > 0:
