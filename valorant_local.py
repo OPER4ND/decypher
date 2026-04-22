@@ -24,6 +24,7 @@ class ValorantLocalClient:
         self.headers = None
         self.base_url = None
         self.lockfile_mtime = None
+        self.connection_generation = 0
 
     def is_game_running(self) -> bool:
         return os.path.exists(self.lockfile_path)
@@ -58,6 +59,7 @@ class ValorantLocalClient:
                 "Content-Type": "application/json",
             }
             self.lockfile_mtime = mtime
+            self.connection_generation += 1
             return True
         except Exception:
             self.lockfile_mtime = None

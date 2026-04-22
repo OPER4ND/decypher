@@ -8,11 +8,12 @@ import time
 import tkinter as tk
 from agent_select import _OverlayBase
 from agent_select_coordinator import AgentSelectCoordinator
+from audio_control import AUDIO_AVAILABLE, mute_valorant, reset_audio_session_cache
 from game_log import GameLogTailer
 from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
 from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
-from valorant_api import AUDIO_AVAILABLE, ValorantLocalAPI, mute_valorant
+from valorant_api import ValorantLocalAPI
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
 from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwindow, user32
 APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
@@ -23,6 +24,7 @@ class DecypherOverlay(_OverlayBase):
 
     def __init__(self):
         self.api = ValorantLocalAPI()
+        self.api_connection_generation = self.api.connection_generation
         self.running = True
         self.visible = False
         self.tray_forced_visible = False
@@ -963,6 +965,13 @@ class DecypherOverlay(_OverlayBase):
         title = presence_title(game_state, source)
         self.root.after(0, lambda: self.status_label.configure(text=title))
 
+    def _sync_audio_cache_with_api_connection(self):
+        generation = self.api.connection_generation
+        if generation == self.api_connection_generation:
+            return
+        self.api_connection_generation = generation
+        reset_audio_session_cache()
+
     def update_loop(self):
         while self.running:
             try:
@@ -970,6 +979,7 @@ class DecypherOverlay(_OverlayBase):
                     self._set_inactive_state()
                     time.sleep(2)
                     continue
+                self._sync_audio_cache_with_api_connection()
                 self.agent_select.ensure_catalog_loading()
                 presence = get_match_presence(self.api)
                 self.current_mode_id = presence.mode_id
