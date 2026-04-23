@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 @dataclass
 class DeathMuteGateState:
+    auto_death_mute_pending: bool = False
     revive_gate: bool = False
     startup_revive_gate: bool = False
     startup_score_baseline: int | None = None
