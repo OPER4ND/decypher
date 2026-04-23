@@ -363,9 +363,7 @@ class DecypherOverlay(_OverlayBase):
     def toggle_manual_mute(self, event=None):
         if self.binding_capture:
             return
-        result = self.mute_state.toggle_manual(self.death_mute_enabled)
-        if result.ignored_deferred_unmute:
-            return
+        result = self.mute_state.toggle_manual()
         if not result.changed:
             return
         if result.enabled:

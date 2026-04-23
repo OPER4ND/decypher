@@ -12,7 +12,6 @@ from audio_control import mute_valorant
 class ManualMuteResult:
     changed: bool
     enabled: bool
-    ignored_deferred_unmute: bool = False
     mute_failed: bool = False
 
 
@@ -37,10 +36,7 @@ class MuteState:
         self.death_muted = False
         return self.sync_target_mute()
 
-    def toggle_manual(self, death_mute_enabled: bool) -> ManualMuteResult:
-        if self.manual_defers_to_auto and death_mute_enabled and self.death_muted and self.manual_muted:
-            return ManualMuteResult(changed=False, enabled=True, ignored_deferred_unmute=True)
-
+    def toggle_manual(self) -> ManualMuteResult:
         previous = self.manual_muted
         self.manual_muted = not self.manual_muted
         if self.sync_target_mute() <= 0:

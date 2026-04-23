@@ -1,0 +1,25 @@
+Game audio is muted when:
+
+death_muted OR manual_muted
+
+Manual mute behavior:
+
+Mode       Starting state                 User presses manual mute     Game audio after                       On score change
+Defer ON   Game unmuted                   manual turns ON              Muted                                  Unmuted; manual clears
+Defer ON   Manual-muted only              manual turns OFF             Unmuted                                Stays unmuted
+Defer ON   Death-muted only               manual turns ON              Muted                                  Unmuted; death and manual clear
+Defer ON   Death-muted + manual-muted     manual turns OFF             Muted, because death mute remains on    Unmuted; death releases and manual is already off
+Defer OFF  Game unmuted                   manual turns ON              Muted                                  Stays muted; manual stays on
+Defer OFF  Manual-muted only              manual turns OFF             Unmuted                                Stays unmuted
+Defer OFF  Death-muted only               manual turns ON              Muted                                  Stays muted; manual stays on
+Defer OFF  Death-muted + manual-muted     manual turns OFF             Muted, because death mute remains on    Unmuted; death releases and manual is off
+
+Key difference:
+
+Defer ON:
+Manual mute always toggles manually muted/unmuted.
+If manual stays on, score change clears it to unmuted.
+
+Defer OFF:
+Manual mute always toggles manually muted/unmuted.
+Score change does not clear manual mute.
