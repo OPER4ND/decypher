@@ -17,7 +17,7 @@ from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
 from valorant_api import ValorantLocalAPI
 from visual_detection import SCREEN_GRAB_AVAILABLE, VisualDeathDetector
-from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwindow, user32
+from win32_window import WINDOWS, apply_overlay_styles, user32
 APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
 
 class DecypherOverlay(_OverlayBase):
@@ -52,10 +52,6 @@ class DecypherOverlay(_OverlayBase):
         self.current_agent_id = None
         self.current_agent_name = None
         self.visual_detector = VisualDeathDetector()
-        self._strip_outline_wins = {}
-        self._strip_outline_bbox = None
-        self._strip_outline_last_state = None
-        self._strip_outline_visible = False
         self.menu_button_detected = False
         self.last_menu_button_seen_ts = 0.0
         self.window_width = 320
@@ -137,7 +133,6 @@ class DecypherOverlay(_OverlayBase):
     def _start_background_tasks(self):
         if WINDOWS:
             self.root.after(100, self._apply_overlay_styles)
-            self.root.after(120, self._create_strip_outline)
             self.root.after(150, self._create_tray_icon)
             self.root.after(150, self._refresh_death_detection_loop)
             self.root.after(200, self._start_log_tailer)
@@ -424,63 +419,12 @@ class DecypherOverlay(_OverlayBase):
 
     def _clear_death_mute_gates(self):
         self.death_mute_gate.clear_death_mute_gates()
-    _OUTLINE_HIT = '#39ff14'
-    _OUTLINE_MISS = '#ffbf00'
-    _OUTLINE_THICKNESS = 3
-    _OUTLINE_PAD = 4
-
-    def _create_strip_outline(self):
-        for side in ('top', 'bottom', 'left', 'right'):
-            w = tk.Toplevel(self.root)
-            w.overrideredirect(True)
-            w.attributes('-topmost', True)
-            w.configure(bg=self._OUTLINE_MISS)
-            w.withdraw()
-            self._strip_outline_wins[side] = w
-            w.after(120, lambda win=w: self._make_passthrough(win))
-
-    def _make_passthrough(self, win):
-        apply_passthrough_toolwindow(win)
-
-    def _show_strip_outline(self, bbox, detected):
-        if not self._strip_outline_wins:
-            return
-        color = self._OUTLINE_HIT if detected else self._OUTLINE_MISS
-        state = (bbox, color)
-        if self._strip_outline_visible and self._strip_outline_last_state == state:
-            return
-        x0, y0, x1, y1 = bbox
-        ox0 = x0 - self._OUTLINE_PAD
-        oy0 = y0 - self._OUTLINE_PAD
-        ox1 = x1 + self._OUTLINE_PAD
-        oy1 = y1 + self._OUTLINE_PAD
-        W = max(1, ox1 - ox0)
-        H = max(1, oy1 - oy0)
-        T = self._OUTLINE_THICKNESS
-        geoms = {'top': (ox0, oy0 - T, W, T), 'bottom': (ox0, oy1, W, T), 'left': (ox0 - T, oy0, T, H), 'right': (ox1, oy0, T, H)}
-        for side, (x, y, w, h) in geoms.items():
-            win = self._strip_outline_wins[side]
-            win.configure(bg=color)
-            win.geometry(f'{w}x{h}+{x}+{y}')
-            win.deiconify()
-            win.lift()
-        self._strip_outline_last_state = state
-        self._strip_outline_visible = True
-
-    def _hide_strip_outline(self):
-        if not self._strip_outline_visible:
-            return
-        for win in self._strip_outline_wins.values():
-            win.withdraw()
-        self._strip_outline_visible = False
-        self._strip_outline_last_state = None
 
     def _menu_seen_recently(self, now=None):
         return self.visual_detector.menu_seen_recently(now)
 
     def _detect_strip_death(self):
         if self.death_muted:
-            self._hide_strip_outline()
             return
         prev_menu = self.menu_button_detected
         prev_dead = self.player_dead
@@ -489,17 +433,11 @@ class DecypherOverlay(_OverlayBase):
         self.last_menu_button_seen_ts = self.visual_detector.last_menu_button_seen_ts
         self.player_dead = detection.player_dead
         if not detection.window_found:
-            self._hide_strip_outline()
             return
         if self.menu_button_detected != prev_menu:
             pass
         if self.player_dead != prev_dead:
             pass
-        combined = detection.combined_strip_bbox
-        if combined:
-            self._show_strip_outline(combined, self.player_dead)
-        else:
-            self._hide_strip_outline()
 
     def _start_log_tailer(self):
         self.game_log_tailer.start()
@@ -561,7 +499,6 @@ class DecypherOverlay(_OverlayBase):
             self.menu_button_detected = False
             self.last_menu_button_seen_ts = 0.0
             self.visual_detector.reset()
-            self._hide_strip_outline()
             self._track_live_score_transition(False)
             if gate.auto_death_mute_pending and self.death_mute_enabled and (not self.death_muted):
                 self._set_waiting_status('waiting for live match')
