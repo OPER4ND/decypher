@@ -1,5 +1,4 @@
 """Decypher overlay for Valorant agent-select actions and death muting."""
-import json
 import os
 import signal
 import sys
@@ -10,7 +9,8 @@ from agent_select import _OverlayBase
 from agent_select_coordinator import AgentSelectCoordinator
 from audio_control import AUDIO_AVAILABLE, mute_valorant, reset_audio_session_cache
 from game_log import GameLogTailer
-from hotkeys import DEFAULT_HOTKEYS, HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed, normalize_hotkey
+from hotkey_settings import HotkeySettings
+from hotkeys import HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed
 from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
 from valorant_api import ValorantLocalAPI
@@ -19,7 +19,6 @@ from win32_window import WINDOWS, apply_overlay_styles, apply_passthrough_toolwi
 APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
 
 class DecypherOverlay(_OverlayBase):
-    DEFAULT_HOTKEYS = DEFAULT_HOTKEYS
     HOTKEY_ACTIONS = HOTKEY_ACTIONS
 
     def __init__(self):
@@ -35,11 +34,7 @@ class DecypherOverlay(_OverlayBase):
         self._drag_data = {'x': 0, 'y': 0}
         self.config_path = os.path.join(self._runtime_base_dir(), 'decypher_config.json')
         self.app_icon_path = os.path.join(self._resource_base_dir(), APP_ICON_RELATIVE_PATH)
-        self.hotkeys = self._load_hotkeys()
-        self.hide_show_hotkey = self.hotkeys['hide_show']
-        self.click_through_hotkey = self.hotkeys['click_through']
-        self.mute_on_death_hotkey = self.hotkeys['mute_on_death']
-        self.manual_mute_hotkey = self.hotkeys['manual_mute']
+        self.hotkey_settings = HotkeySettings(self.config_path)
         self.hotkey_widgets = {}
         self.binding_capture = None
         self._hotkey_resume_after = 0.0
@@ -215,46 +210,13 @@ class DecypherOverlay(_OverlayBase):
         except Exception as exc:
             pass
 
-    def _load_hotkeys(self):
-        hotkeys = dict(self.DEFAULT_HOTKEYS)
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as config_file:
-                config = json.load(config_file)
-        except FileNotFoundError:
-            return hotkeys
-        except Exception:
-            return hotkeys
-        if isinstance(config, dict):
-            for name, fallback in self.DEFAULT_HOTKEYS.items():
-                hotkeys[name] = normalize_hotkey(config.get(name), fallback)
-        return hotkeys
-
-    def _save_hotkeys(self):
-        config = {}
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as config_file:
-                loaded_config = json.load(config_file)
-            if isinstance(loaded_config, dict):
-                config.update(loaded_config)
-        except FileNotFoundError:
-            pass
-        except Exception:
-            pass
-        config.update(self.hotkeys)
-        try:
-            with open(self.config_path, 'w', encoding='utf-8') as config_file:
-                json.dump(config, config_file, indent=2)
-                config_file.write('\n')
-        except Exception as exc:
-            pass
+    def _hotkey(self, name):
+        return self.hotkey_settings.get(name)
 
     def _set_hotkey(self, name, hotkey):
-        self.hotkeys[name] = hotkey
-        self.hide_show_hotkey = self.hotkeys['hide_show']
-        self.click_through_hotkey = self.hotkeys['click_through']
-        self.mute_on_death_hotkey = self.hotkeys['mute_on_death']
-        self.manual_mute_hotkey = self.hotkeys['manual_mute']
-        self._save_hotkeys()
+        save_error = self.hotkey_settings.set(name, hotkey)
+        if save_error:
+            pass
         self._refresh_hotkey_controls()
 
     def _hotkey_action_enabled(self, name):
@@ -273,7 +235,7 @@ class DecypherOverlay(_OverlayBase):
     def _create_hotkey_item(self, parent, name, label, column):
         item = tk.Frame(parent, bg='#161b22', cursor='hand2')
         item.grid(row=0, column=column, sticky='w', padx=(0, 8), pady=1)
-        key_label = tk.Label(item, text=self.hotkeys[name], font=(self.FONT_FAMILY, 10, 'bold'), fg='#0d1117', bg='#8b949e', padx=5, pady=0, width=8, cursor='hand2')
+        key_label = tk.Label(item, text=self._hotkey(name), font=(self.FONT_FAMILY, 10, 'bold'), fg='#0d1117', bg='#8b949e', padx=5, pady=0, width=8, cursor='hand2')
         key_label.pack(side='left')
         action_label = tk.Label(item, text=f' {label}', font=(self.FONT_FAMILY, 10), fg='#8b949e', bg='#161b22', cursor='hand2')
         action_label.pack(side='left')
@@ -284,7 +246,7 @@ class DecypherOverlay(_OverlayBase):
     def _refresh_hotkey_controls(self):
         for name, widgets in self.hotkey_widgets.items():
             is_active = self.binding_capture == name
-            widgets['key'].configure(text='...' if is_active else self.hotkeys[name], fg='#0d1117', bg='#d29922' if is_active else '#8b949e')
+            widgets['key'].configure(text='...' if is_active else self._hotkey(name), fg='#0d1117', bg='#d29922' if is_active else '#8b949e')
 
     def _begin_hotkey_capture(self, name):
         self.binding_capture = name
@@ -322,10 +284,9 @@ class DecypherOverlay(_OverlayBase):
         if not hotkey:
             self._flash_hotkey_error(name)
             return 'break'
-        for other_name, other_hotkey in self.hotkeys.items():
-            if other_name != name and other_hotkey == hotkey:
-                self._flash_hotkey_error(name)
-                return 'break'
+        if self.hotkey_settings.has_conflict(name, hotkey):
+            self._flash_hotkey_error(name)
+            return 'break'
         self.binding_capture = None
         self._hotkey_resume_after = time.time() + 0.5
         self._apply_overlay_styles()
@@ -928,16 +889,16 @@ class DecypherOverlay(_OverlayBase):
                     time.sleep(0.05)
                     continue
                 fired = False
-                if hotkey_is_pressed(self.hide_show_hotkey, user32_local):
+                if hotkey_is_pressed(self._hotkey('hide_show'), user32_local):
                     self.root.after(0, self.toggle_visibility)
                     fired = True
-                if hotkey_is_pressed(self.click_through_hotkey, user32_local):
+                if hotkey_is_pressed(self._hotkey('click_through'), user32_local):
                     self.root.after(0, self.toggle_click_through)
                     fired = True
-                if AUDIO_AVAILABLE and hotkey_is_pressed(self.mute_on_death_hotkey, user32_local):
+                if AUDIO_AVAILABLE and hotkey_is_pressed(self._hotkey('mute_on_death'), user32_local):
                     self.root.after(0, self.toggle_death_mute)
                     fired = True
-                if AUDIO_AVAILABLE and hotkey_is_pressed(self.manual_mute_hotkey, user32_local):
+                if AUDIO_AVAILABLE and hotkey_is_pressed(self._hotkey('manual_mute'), user32_local):
                     self.root.after(0, self.toggle_manual_mute)
                     fired = True
                 time.sleep(0.3 if fired else 0.05)
