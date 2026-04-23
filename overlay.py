@@ -7,10 +7,11 @@ import time
 import tkinter as tk
 from agent_select import _OverlayBase
 from agent_select_coordinator import AgentSelectCoordinator
-from audio_control import AUDIO_AVAILABLE, mute_valorant, reset_audio_session_cache
+from audio_control import AUDIO_AVAILABLE, reset_audio_session_cache
 from game_log import GameLogTailer
 from hotkey_settings import HotkeySettings
 from hotkeys import HOTKEY_ACTIONS, event_to_hotkey, format_hotkey, hotkey_is_pressed
+from mute_state import MuteState
 from presence import get_local_player, get_match_presence, presence_title
 from tray_icon import TrayIcon
 from valorant_api import ValorantLocalAPI
@@ -40,9 +41,7 @@ class DecypherOverlay(_OverlayBase):
         self._hotkey_resume_after = 0.0
         self.death_mute_enabled = False
         self.auto_death_mute_pending = False
-        self.death_muted = False
-        self.manual_muted = False
-        self.manual_defers_to_auto = True
+        self.mute_state = MuteState()
         self.player_dead = False
         self.revive_gate = False
         self.startup_revive_gate = False
@@ -210,6 +209,30 @@ class DecypherOverlay(_OverlayBase):
         except Exception as exc:
             pass
 
+    @property
+    def death_muted(self) -> bool:
+        return self.mute_state.death_muted
+
+    @death_muted.setter
+    def death_muted(self, value: bool):
+        self.mute_state.death_muted = value
+
+    @property
+    def manual_muted(self) -> bool:
+        return self.mute_state.manual_muted
+
+    @manual_muted.setter
+    def manual_muted(self, value: bool):
+        self.mute_state.manual_muted = value
+
+    @property
+    def manual_defers_to_auto(self) -> bool:
+        return self.mute_state.manual_defers_to_auto
+
+    @manual_defers_to_auto.setter
+    def manual_defers_to_auto(self, value: bool):
+        self.mute_state.manual_defers_to_auto = value
+
     def _hotkey(self, name):
         return self.hotkey_settings.get(name)
 
@@ -360,26 +383,23 @@ class DecypherOverlay(_OverlayBase):
         self.mute_toggle.configure(text='[   ] Mute on Death', fg='#c9d1d9')
         self._set_mute_status('disabled', '#6e7681')
         if self.death_muted:
-            self._release_death_mute()
+            self.mute_state.release_death()
         self._clear_death_mute_gates()
         self._refresh_defer_toggle_style()
 
     def toggle_manual_mute(self, event=None):
         if self.binding_capture:
             return
-        if self.manual_defers_to_auto and self.death_mute_enabled and self.death_muted and self.manual_muted:
+        result = self.mute_state.toggle_manual(self.death_mute_enabled)
+        if result.ignored_deferred_unmute:
             return
-        previous = self.manual_muted
-        self.manual_muted = not self.manual_muted
-        if self._sync_target_mute() <= 0:
-            self.manual_muted = previous
-            self._sync_target_mute()
+        if not result.changed:
             return
-        if self.manual_muted:
+        if result.enabled:
             pass
 
     def toggle_manual_defers_to_auto(self, event=None):
-        self.manual_defers_to_auto = not self.manual_defers_to_auto
+        enabled = self.mute_state.toggle_manual_defers_to_auto()
         self._refresh_defer_toggle_style()
 
     def _refresh_defer_toggle_style(self):
@@ -393,9 +413,8 @@ class DecypherOverlay(_OverlayBase):
         self.defer_toggle.configure(text=text, fg=fg)
 
     def _maybe_clear_deferred_manual(self):
-        if self.manual_defers_to_auto and self.death_mute_enabled and self.manual_muted:
-            self.manual_muted = False
-            self._sync_target_mute()
+        if self.mute_state.clear_deferred_manual(self.death_mute_enabled):
+            pass
 
     def _set_mute_status(self, text: str, fg: str):
         self.mute_status.configure(text=text, fg=fg)
@@ -748,7 +767,7 @@ class DecypherOverlay(_OverlayBase):
     def _on_match_end(self):
         self._clear_death_mute_gates()
         self._maybe_clear_deferred_manual()
-        if self.death_muted and self._release_death_mute() > 0:
+        if self.death_muted and self.mute_state.release_death() > 0:
             self._begin_round_start_cooldown()
             status_text = 'death mute released; manual mute still on' if self.manual_muted else 'unmuted (not in live match)'
             self._set_mute_status(status_text, '#3fb950')
@@ -809,7 +828,7 @@ class DecypherOverlay(_OverlayBase):
             self.last_score_poll_ts = 0.0
             self._set_waiting_status(f'waiting for Clove ult {self.clove_ult_pending_seconds:.1f}s')
             return
-        if self._engage_death_mute() > 0:
+        if self.mute_state.engage_death() > 0:
             self.mute_armed_ts = 0.0
             self.score_total_at_mute = self.api.get_round_score_total()
             self.last_score_poll_ts = time.time()
@@ -836,26 +855,12 @@ class DecypherOverlay(_OverlayBase):
         if score_status == 'changed':
             self.player_dead = False
             self._begin_round_start_cooldown(previous_score=baseline_score, current_score=current_score)
-            if self._release_death_mute() <= 0:
+            if self.mute_state.release_death() <= 0:
                 return
             self.score_total_at_mute = None
             self.mute_armed_ts = 0.0
             status_text = f'death mute released; manual mute still on; cooldown {int(self.round_start_cooldown_seconds)}s' if self.manual_muted else f'unmuted; round-start cooldown {int(self.round_start_cooldown_seconds)}s'
             self._set_waiting_status(status_text)
-
-    def _sync_target_mute(self) -> int:
-        return 1 if mute_valorant(self.death_muted or self.manual_muted) else 0
-
-    def _engage_death_mute(self) -> int:
-        self.death_muted = True
-        if self._sync_target_mute() > 0:
-            return 1
-        self.death_muted = False
-        return 0
-
-    def _release_death_mute(self) -> int:
-        self.death_muted = False
-        return self._sync_target_mute()
 
     def toggle_visibility(self):
         if self.binding_capture:
@@ -996,9 +1001,7 @@ class DecypherOverlay(_OverlayBase):
         self.game_log_tailer.stop()
         self._remove_tray_icon()
         if self.death_muted or self.manual_muted:
-            self.death_muted = False
-            self.manual_muted = False
-            mute_valorant(False)
+            self.mute_state.clear_all()
         self.running = False
         os._exit(0)
 
