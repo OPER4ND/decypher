@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 try:
     import comtypes
@@ -33,6 +34,9 @@ _cached_targets = {
     MUTE_TARGET_DEFAULT: _UNSET,
     MUTE_TARGET_COMMS: _UNSET,
 }
+_VOICE_RENDER_KEY = "EAresStringSettingName::VoiceDeviceRenderHandle"
+_DEFAULT_COMMUNICATION_DEVICE = "default communication device"
+_DEFAULT_SYSTEM_DEVICE = "default system device"
 
 
 def _is_valorant_audio_process(session) -> bool:
@@ -82,6 +86,98 @@ def _get_sessions_for_role(role_value: int) -> list[AudioSession]:
         return []
 
 
+def _get_sessions_for_endpoint_id(endpoint_id: str) -> list[AudioSession]:
+    try:
+        device_enumerator = comtypes.CoCreateInstance(
+            CLSID_MMDeviceEnumerator,
+            IMMDeviceEnumerator,
+            comtypes.CLSCTX_INPROC_SERVER,
+        )
+        device = device_enumerator.GetDevice(endpoint_id)
+        audio_device = AudioUtilities.CreateDevice(device)
+        enumerator = audio_device.AudioSessionManager.GetSessionEnumerator()
+        sessions: list[AudioSession] = []
+        for index in range(enumerator.GetCount()):
+            ctl = enumerator.GetSession(index)
+            if ctl is None:
+                continue
+            ctl2 = ctl.QueryInterface(IAudioSessionControl2)
+            if ctl2 is not None:
+                sessions.append(AudioSession(ctl2))
+        return sessions
+    except Exception:
+        return []
+
+
+def _valorant_config_root() -> str:
+    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "VALORANT", "Saved", "Config")
+
+
+def _iter_riot_user_settings_paths() -> list[str]:
+    root = _valorant_config_root()
+    if not os.path.isdir(root):
+        return []
+
+    paths: list[str] = []
+    for entry in os.scandir(root):
+        if not entry.is_dir():
+            continue
+        candidate = os.path.join(entry.path, "Windows", "RiotUserSettings.ini")
+        if os.path.isfile(candidate):
+            paths.append(candidate)
+
+    paths.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+    return paths
+
+
+def _read_voice_render_handle() -> str | None:
+    for path in _iter_riot_user_settings_paths():
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line.startswith(_VOICE_RENDER_KEY):
+                        continue
+                    _, _, value = line.partition("=")
+                    value = value.strip().strip('"')
+                    return value or None
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_render_endpoint_id(render_handle: str | None) -> str | None:
+    if not render_handle:
+        return None
+
+    normalized = render_handle.strip().strip('"')
+    if not normalized:
+        return None
+
+    lowered = normalized.lower()
+    if lowered in (_DEFAULT_COMMUNICATION_DEVICE, _DEFAULT_SYSTEM_DEVICE):
+        return None
+
+    devices = AudioUtilities.GetAllDevices(EDataFlow.eRender.value)
+    for device in devices:
+        device_id = getattr(device, "id", "")
+        friendly_name = getattr(device, "FriendlyName", "")
+        if normalized == device_id or normalized == friendly_name:
+            return device_id
+
+    normalized_guid = normalized.strip("{}").lower()
+    if normalized_guid:
+        for device in devices:
+            device_id = getattr(device, "id", "")
+            friendly_name = getattr(device, "FriendlyName", "")
+            if normalized_guid in device_id.lower():
+                return device_id
+            if normalized_guid == friendly_name.strip("{}").lower():
+                return device_id
+
+    return None
+
+
 def _get_cached_target(cache_key: str, resolver):
     cached = _cached_targets[cache_key]
     if cached is not _UNSET:
@@ -118,6 +214,21 @@ def _get_valorant_role_binding(cache_key: str, role_value: int) -> _SessionBindi
     return _get_cached_target(cache_key, _resolve)
 
 
+def _get_valorant_comms_binding() -> _SessionBinding | None:
+    render_handle = _read_voice_render_handle()
+    lowered = (render_handle or "").strip().lower()
+    if lowered == _DEFAULT_SYSTEM_DEVICE:
+        return _get_valorant_role_binding(MUTE_TARGET_DEFAULT, ERole.eMultimedia.value)
+
+    endpoint_id = _resolve_render_endpoint_id(render_handle)
+    if endpoint_id:
+        for session in _get_sessions_for_endpoint_id(endpoint_id):
+            if _is_valorant_audio_process(session):
+                return _binding_from_session(session)
+
+    return _get_valorant_role_binding(MUTE_TARGET_COMMS, ERole.eCommunications.value)
+
+
 def _get_bindings_for_target(target: str) -> tuple[_SessionBinding, ...]:
     if target == MUTE_TARGET_BOTH:
         return _get_valorant_volume_bindings()
@@ -125,7 +236,7 @@ def _get_bindings_for_target(target: str) -> tuple[_SessionBinding, ...]:
         binding = _get_valorant_role_binding(MUTE_TARGET_DEFAULT, ERole.eMultimedia.value)
         return (binding,) if binding is not None else tuple()
     if target == MUTE_TARGET_COMMS:
-        binding = _get_valorant_role_binding(MUTE_TARGET_COMMS, ERole.eCommunications.value)
+        binding = _get_valorant_comms_binding()
         return (binding,) if binding is not None else tuple()
     return tuple()
 

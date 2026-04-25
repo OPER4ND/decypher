@@ -23,6 +23,7 @@ from decypher.valorant.valorant_api import ValorantLocalAPI
 APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
 DRAGNSCROLL_RELATIVE_PATH = os.path.join('scripts', 'dragnscroll.ahk')
 VALORANT_PROCESS_NAME = 'valorant-win64-shipping.exe'
+SUPPORTED_MUTE_MODE_KEYWORDS = ('competitive', 'unrated', 'swift', 'swiftplay')
 
 class DecypherOverlay(_OverlayBase):
     HOTKEY_ACTIONS = HOTKEY_ACTIONS
@@ -79,7 +80,7 @@ class DecypherOverlay(_OverlayBase):
 
     def _create_root_window(self):
         self.root = tk.Tk()
-        self.root.title('Decypher')
+        self.root.title('DECYPHER')
         self._apply_app_icon()
         self.root.attributes('-topmost', True)
         self.root.attributes('-alpha', 0.92)
@@ -332,6 +333,31 @@ class DecypherOverlay(_OverlayBase):
     def _hotkey(self, name):
         return self.hotkey_settings.get(name)
 
+    def _mute_mode_allowed(self, mode_id: str | None=None, game_state: str | None=None) -> bool:
+        mode_key = f'{mode_id or self.current_mode_id} {game_state or self.current_game_state}'.lower()
+        return any((keyword in mode_key for keyword in SUPPORTED_MUTE_MODE_KEYWORDS))
+
+    def _main_overlay_allowed(self) -> bool:
+        return self.in_match and self._mute_mode_allowed()
+
+    def _set_main_overlay_visibility(self, visible: bool):
+        if visible:
+            if self.visible:
+                return
+            self.visible = True
+            self.root.after(0, self.root.deiconify)
+            return
+        if not self.visible:
+            return
+        self.tray_forced_visible = False
+        self.visible = False
+        self.root.after(0, self.root.withdraw)
+
+    def _clear_mute_runtime_state(self):
+        self._clear_death_mute_gates()
+        if self.death_muted or self.mute_state.manual_override is not None:
+            self.mute_state.clear_all()
+
     def _set_hotkey(self, name, hotkey):
         save_error = self.hotkey_settings.set(name, hotkey)
         if save_error:
@@ -448,6 +474,8 @@ class DecypherOverlay(_OverlayBase):
             pass
 
     def _show_from_tray(self):
+        if not self._main_overlay_allowed():
+            return
         self.tray_forced_visible = True
         self.visible = True
         self._position_main_window()
@@ -467,7 +495,7 @@ class DecypherOverlay(_OverlayBase):
             self._show_from_tray()
 
     def toggle_death_mute(self, event=None):
-        if self.binding_capture:
+        if self.binding_capture or not self._mute_mode_allowed():
             return
         self.death_mute_gate.auto_death_mute_pending = False
         if self.death_mute_enabled:
@@ -506,7 +534,7 @@ class DecypherOverlay(_OverlayBase):
         self._refresh_defer_toggle_style()
 
     def toggle_manual_mute(self, event=None):
-        if self.binding_capture:
+        if self.binding_capture or not self._mute_mode_allowed():
             return
         result = self.mute_state.toggle_manual()
         if not result.changed:
@@ -517,6 +545,8 @@ class DecypherOverlay(_OverlayBase):
             pass
 
     def toggle_manual_defers_to_auto(self, event=None):
+        if not self._mute_mode_allowed():
+            return
         enabled = self.mute_state.toggle_manual_defers_to_auto()
         self._refresh_defer_toggle_style()
 
@@ -661,6 +691,16 @@ class DecypherOverlay(_OverlayBase):
     def _refresh_death_detection_loop(self):
         gate = self.death_mute_gate
         if not self.running:
+            return
+        if not self._mute_mode_allowed():
+            self.player_dead = False
+            gate.clove_ult_detected = False
+            self.menu_button_detected = False
+            self.last_menu_button_seen_ts = 0.0
+            self.visual_detector.reset()
+            self._track_live_score_transition(False)
+            self._clear_mute_runtime_state()
+            self.root.after(100, self._refresh_death_detection_loop)
             return
         live_match_active = self.in_match and (not self.in_pregame)
         if not WINDOWS or not live_match_active:
@@ -919,7 +959,7 @@ class DecypherOverlay(_OverlayBase):
     def toggle_visibility(self):
         if self.binding_capture:
             return
-        if not self.visible and (not self.in_match):
+        if not self.visible and (not self._main_overlay_allowed()):
             return
         self.visible = not self.visible
         if self.visible:
@@ -954,10 +994,10 @@ class DecypherOverlay(_OverlayBase):
                 if hotkey_is_pressed(self._hotkey('click_through'), user32_local):
                     self.root.after(0, self.toggle_click_through)
                     fired = True
-                if AUDIO_AVAILABLE and hotkey_is_pressed(self._hotkey('mute_on_death'), user32_local):
+                if AUDIO_AVAILABLE and self._mute_mode_allowed() and hotkey_is_pressed(self._hotkey('mute_on_death'), user32_local):
                     self.root.after(0, self.toggle_death_mute)
                     fired = True
-                if AUDIO_AVAILABLE and hotkey_is_pressed(self._hotkey('manual_mute'), user32_local):
+                if AUDIO_AVAILABLE and self._mute_mode_allowed() and hotkey_is_pressed(self._hotkey('manual_mute'), user32_local):
                     self.root.after(0, self.toggle_manual_mute)
                     fired = True
                 time.sleep(0.3 if fired else 0.05)
@@ -965,14 +1005,11 @@ class DecypherOverlay(_OverlayBase):
                 pass
 
     def auto_show(self):
-        if not self.visible:
-            self.visible = True
-            self.root.after(0, self.root.deiconify)
+        if self._main_overlay_allowed():
+            self._set_main_overlay_visibility(True)
 
     def auto_hide(self):
-        if self.visible:
-            self.visible = False
-            self.root.after(0, self.root.withdraw)
+        self._set_main_overlay_visibility(False)
 
     def _can_preload_agent_select(self):
         return not (self.in_match and (not self.in_pregame))
@@ -1004,10 +1041,14 @@ class DecypherOverlay(_OverlayBase):
                 presence = get_match_presence(self.api)
                 self.current_mode_id = presence.mode_id
                 self.update_presence_panel(presence.game_state, presence.source)
+                mute_mode_allowed = self._mute_mode_allowed(presence.mode_id, presence.game_state)
                 if presence.source == 'pregame':
                     if not self.in_match:
                         self.in_match = True
+                    if mute_mode_allowed:
                         self.auto_show()
+                    else:
+                        self.auto_hide()
                     if not self.in_pregame:
                         self.in_pregame = True
                         self.agent_select.show()
@@ -1025,7 +1066,10 @@ class DecypherOverlay(_OverlayBase):
                         self.current_agent_name = self.api.get_agent_name(local['agent'])
                     if not self.in_match:
                         self.in_match = True
+                    if mute_mode_allowed:
                         self.auto_show()
+                    else:
+                        self.auto_hide()
                     if self.in_pregame:
                         self.in_pregame = False
                         self.agent_select.destroy()

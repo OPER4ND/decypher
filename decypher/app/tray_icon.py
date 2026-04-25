@@ -84,7 +84,7 @@ if WINDOWS:
 
 class TrayIcon:
 
-    def __init__(self, root, is_visible, is_click_through, on_toggle_visibility, on_toggle_click_through, on_exit, tooltip='Decypher', icon_path=None):
+    def __init__(self, root, is_visible, is_click_through, on_toggle_visibility, on_toggle_click_through, on_exit, tooltip='DECYPHER', icon_path=None):
         self.root = root
         self.is_visible = is_visible
         self.is_click_through = is_click_through
@@ -252,7 +252,7 @@ class TrayIcon:
         menu = user32.CreatePopupMenu()
         if not menu:
             return
-        show_hide_text = 'Hide Decypher' if self.is_visible() else 'Show Decypher'
+        show_hide_text = 'Hide DECYPHER' if self.is_visible() else 'Show DECYPHER'
         click_text = 'Disable Click-through' if self.is_click_through() else 'Enable Click-through'
         user32.AppendMenuW(menu, MF_STRING, TRAY_SHOW_HIDE_ID, show_hide_text)
         user32.AppendMenuW(menu, MF_STRING, TRAY_CLICK_THROUGH_ID, click_text)
