@@ -5,7 +5,7 @@ a = Analysis(
     ['overlay.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets/decypher.ico', 'assets')],
+    datas=[('assets/decypher.ico', 'assets'), ('dragnscroll.ahk', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -49,6 +49,10 @@ install_exe.bat
 - `F3`: toggle click-through mode.
 - `Esc`: close the overlay.
 
+## Optional Script
+
+`dragnscroll.ahk` is included in the repo for drag-to-scroll behavior. Decypher starts and stops it automatically while VALORANT is running, focused, and not in a live match. This requires AutoHotkey v2 to be installed; if AutoHotkey is missing, Decypher simply skips the script.
+
 ## Behavior
 
 When `Mute on Death` is enabled, Decypher samples a narrow fixed strip of the Valorant window. A matching death-strip color mutes the Valorant audio session. While muted, Decypher polls the local presence score and unmutes when the total score changes.

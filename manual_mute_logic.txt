@@ -1,25 +1,27 @@
-Game audio is muted when:
+Game audio follows:
 
-death_muted OR manual_muted
+manual override, if set
+otherwise death_muted
 
-Manual mute behavior:
+Manual hotkey behavior:
 
-Mode       Starting state                 User presses manual mute     Game audio after                       On score change
-Defer ON   Game unmuted                   manual turns ON              Muted                                  Unmuted; manual clears
-Defer ON   Manual-muted only              manual turns OFF             Unmuted                                Stays unmuted
-Defer ON   Death-muted only               manual turns ON              Muted                                  Unmuted; death and manual clear
-Defer ON   Death-muted + manual-muted     manual turns OFF             Muted, because death mute remains on    Unmuted; death releases and manual is already off
-Defer OFF  Game unmuted                   manual turns ON              Muted                                  Stays muted; manual stays on
-Defer OFF  Manual-muted only              manual turns OFF             Unmuted                                Stays unmuted
-Defer OFF  Death-muted only               manual turns ON              Muted                                  Stays muted; manual stays on
-Defer OFF  Death-muted + manual-muted     manual turns OFF             Muted, because death mute remains on    Unmuted; death releases and manual is off
+- If game audio is currently unmuted, manual toggles to muted.
+- If game audio is currently muted, manual toggles to unmuted.
+- That makes manual a real override while death mute is active.
 
-Key difference:
+Defer mode:
 
-Defer ON:
-Manual mute always toggles manually muted/unmuted.
-If manual stays on, score change clears it to unmuted.
+- If `Manual defers to round` is ON, any manual override clears on round/score change.
+- If it is OFF, the manual override stays in effect until the user toggles again.
 
-Defer OFF:
-Manual mute always toggles manually muted/unmuted.
-Score change does not clear manual mute.
+Examples:
+
+Mode       Starting state                 User presses manual     Game audio after press                On score change
+Defer ON   Unmuted                        Force mute              Muted                                 Manual override clears
+Defer ON   Death-muted                    Force unmute            Unmuted                               Manual override clears
+Defer ON   Manual-muted                   Force unmute            Unmuted                               Manual override clears
+Defer ON   Manual-unmuted over death      Force mute              Muted                                 Manual override clears
+Defer OFF  Unmuted                        Force mute              Muted                                 Manual override stays
+Defer OFF  Death-muted                    Force unmute            Unmuted                               Manual override stays
+Defer OFF  Manual-muted                   Force unmute            Unmuted                               Manual override stays
+Defer OFF  Manual-unmuted over death      Force mute              Muted                                 Manual override stays

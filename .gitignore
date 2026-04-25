@@ -41,6 +41,15 @@ report_card*.png
 valorant_ult.png
 white_button.png
 
+# Local audio diagnostics / traces
+audio_session_monitor.py
+audio_session_*.csv
+capture_audio_etw.ps1
+start_audio_etw.ps1
+stop_audio_etw.ps1
+test_vivox_sessions.py
+traces/
+
 # Local scratch assets
 icons/
 
