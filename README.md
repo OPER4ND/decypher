@@ -1,11 +1,29 @@
-# Decypher
+# decypher
 
-Lightweight Valorant overlay focused on two features:
-
+QoL VALORANT overlay due to recent UI updates, focusing on two features:
+- Mute on Death: mute the whole Valorant audio session once killed, then unmute on new round. Accounts for Clove ult, but NOT Sage revive.
 - Agent select actions: select, instalock, and dodge.
-- Mute on Death: mute the whole Valorant audio session when the death strip is detected, then unmute when the live round score changes.
 
-Decypher does not resolve hidden IGNs, ranks, peak ranks, or party data.
+`scripts/dragnscroll.ahk` is included for drag-to-scroll behavior to restore what UI changes stole: ability to scroll match history and friend list via `M2`. It is only ever active while VALORANT is running, focused, and not in a live match, so your `M2` is never hijacked. Requires AutoHotkey v2 to be installed. If `M2` is somehow ever hijacked, kill the script with `Ctrl+Alt+Backspace`.
+
+---
+
+<table>
+  <tr>
+    <td width="50%" align="center"><strong>Mute overlay</strong></td>
+    <td width="50%" align="center"><strong>Agent select overlay</strong><br>(screenshot butchered by AI upscale)</td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="screenshots/mute_overlay.png" alt="Mute overlay" width="78%">
+    </td>
+    <td width="50%" align="center">
+      <img src="screenshots/agent_select_overlay.png" alt="Agent select overlay" width="70%">
+    </td>
+  </tr>
+</table>
+
+---
 
 ## Requirements
 
@@ -13,69 +31,42 @@ Decypher does not resolve hidden IGNs, ranks, peak ranks, or party data.
 - Valorant in borderless windowed mode
 - Python 3.10+ for source installs
 
-## Run From Source
+## Installation
 
 ```powershell
 pip install -r requirements.txt
 python overlay.py
 ```
 
-Or use:
+or
 
 ```bat
 install.bat
 ```
 
-## Build
+Alternatively, run `install_exe.bat` from the release zip.
 
-```powershell
-python -m PyInstaller decypher.spec --noconfirm
-```
+## Controls (configurable)
 
-The executable is written to `dist\decypher.exe`.
-
-## Layout
-
-- `decypher/`: main application package
-- `scripts/`: runtime helper scripts such as drag-scroll
-- `docs/`: project notes and internal behavior docs
-- root: launcher, build spec, config example, and install scripts
-
-## Install Built EXE
-
-After building or downloading a release package, run:
-
-```bat
-install_exe.bat
-```
-
-## Controls
-
-- `Mute on Death`: arms or disables strip-based mute automation.
 - `F2`: toggle overlay visibility while in match.
 - `F3`: toggle click-through mode.
-- `Esc`: close the overlay.
-
-## Optional Script
-
-`scripts/dragnscroll.ahk` is included in the repo for drag-to-scroll behavior. Decypher starts and stops it automatically while VALORANT is running, focused, and not in a live match. This requires AutoHotkey v2 to be installed; if AutoHotkey is missing, Decypher simply skips the script.
-
-## Behavior
-
-When `Mute on Death` is enabled, Decypher samples a narrow fixed strip of the Valorant window. A matching death-strip color mutes the Valorant audio session. While muted, Decypher polls the local presence score and unmutes when the total score changes.
-
-If the death strip is already detected when `Mute on Death` is enabled, Decypher treats that as an existing death state, does not mute, waits for the next score change, then applies a 25 second round-start cooldown before arming again.
+- `F4`: toggle Mute on Death.
+- `F5`: toggle manual mute.
 
 ## Uninstall
-
-Run:
 
 ```bat
 uninstall.bat
 ```
 
-Or delete the Decypher shortcut from:
+or delete the decypher shortcut from:
 
 ```text
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 ```
+
+## Notes
+
+Not affiliated with Riot Games. Flaggable? Don't know.
+
+Not Overwolf-based so some edge cases may slip through but I tried to handle all of them.

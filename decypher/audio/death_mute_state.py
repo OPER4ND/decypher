@@ -24,7 +24,7 @@ class DeathMuteGateState:
     score_total_at_mute: int | None = None
     last_score_poll_ts: float = 0.0
     score_poll_interval_muted: float = 1.0
-    normal_round_start_cooldown_seconds: float = 25.0
+    normal_round_start_cooldown_seconds: float = 30.0
     extended_round_start_cooldown_seconds: float = 42.0
     clove_ult_detected: bool = False
     clove_ult_last_ready_ts: float = 0.0

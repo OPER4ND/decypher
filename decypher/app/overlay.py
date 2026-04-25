@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import winreg
 from decypher.audio.audio_control import AUDIO_AVAILABLE, MUTE_TARGET_BOTH, MUTE_TARGET_COMMS, MUTE_TARGET_DEFAULT, mute_valorant_target, reset_audio_session_cache
 from decypher.audio.death_mute_state import DeathMuteGateState
 from decypher.audio.game_log import GameLogTailer
@@ -24,6 +25,7 @@ APP_ICON_RELATIVE_PATH = os.path.join('assets', 'decypher.ico')
 DRAGNSCROLL_RELATIVE_PATH = os.path.join('scripts', 'dragnscroll.ahk')
 VALORANT_PROCESS_NAME = 'valorant-win64-shipping.exe'
 SUPPORTED_MUTE_MODE_KEYWORDS = ('competitive', 'unrated', 'swift', 'swiftplay')
+MANUAL_HIDE_RESET_DELAY_SECONDS = 15.0
 
 class DecypherOverlay(_OverlayBase):
     HOTKEY_ACTIONS = HOTKEY_ACTIONS
@@ -33,6 +35,8 @@ class DecypherOverlay(_OverlayBase):
         self.api_connection_generation = self.api.connection_generation
         self.running = True
         self.visible = False
+        self.main_overlay_manually_hidden = False
+        self.last_active_match_seen_ts = 0.0
         self.tray_forced_visible = False
         self.click_through = False
         self.in_match = False
@@ -70,6 +74,7 @@ class DecypherOverlay(_OverlayBase):
         self._autohotkey_checked_for_session = False
         self._cached_autohotkey_executable = None
         self._foreground_process_name = None
+        self._valorant_foreground_since = 0.0
         self.foreground_tracker = None
         self.window_width = 320
         self._create_root_window()
@@ -81,6 +86,7 @@ class DecypherOverlay(_OverlayBase):
 
     def _create_root_window(self):
         self.root = tk.Tk()
+        self.root.withdraw()
         self.root.title('DECYPHER')
         self._apply_app_icon()
         self.root.attributes('-topmost', True)
@@ -207,12 +213,23 @@ class DecypherOverlay(_OverlayBase):
     def _resolve_autohotkey_executable(self) -> str | None:
         if self._autohotkey_checked_for_session:
             return self._cached_autohotkey_executable
-        candidates = [shutil.which('AutoHotkey64.exe'), shutil.which('AutoHotkey.exe'), 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe', 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey.exe']
+        candidates = [shutil.which('AutoHotkey64.exe'), shutil.which('AutoHotkey.exe'), 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe', 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey.exe', os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'AutoHotkey', 'UX', 'AutoHotkeyUX.exe')]
         for candidate in candidates:
             if candidate and os.path.exists(candidate):
                 self._cached_autohotkey_executable = candidate
                 self._autohotkey_checked_for_session = True
                 return candidate
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, 'AutoHotkeyScript\\Shell\\Open\\Command') as key:
+                command, _ = winreg.QueryValueEx(key, '')
+            if command:
+                exe_path = command.strip().split('"')[1] if '"' in command else command.split()[0]
+                if exe_path and os.path.exists(exe_path):
+                    self._cached_autohotkey_executable = exe_path
+                    self._autohotkey_checked_for_session = True
+                    return exe_path
+        except Exception:
+            pass
         self._cached_autohotkey_executable = None
         self._autohotkey_checked_for_session = True
         return None
@@ -479,6 +496,8 @@ class DecypherOverlay(_OverlayBase):
 
     def _on_foreground_process_changed(self, process_name: str | None):
         self._foreground_process_name = process_name
+        if process_name == VALORANT_PROCESS_NAME:
+            self._valorant_foreground_since = time.time()
         self._request_dragnscroll_sync()
 
     def _request_dragnscroll_sync(self):
@@ -492,6 +511,7 @@ class DecypherOverlay(_OverlayBase):
     def _show_from_tray(self):
         if not self._main_overlay_allowed():
             return
+        self.main_overlay_manually_hidden = False
         self.tray_forced_visible = True
         self.visible = True
         self._position_main_window()
@@ -500,6 +520,7 @@ class DecypherOverlay(_OverlayBase):
         self._apply_overlay_styles()
 
     def _hide_from_tray(self):
+        self.main_overlay_manually_hidden = True
         self.tray_forced_visible = False
         self.visible = False
         self.root.withdraw()
@@ -642,6 +663,11 @@ class DecypherOverlay(_OverlayBase):
     def _detect_strip_death(self):
         if self.death_muted:
             return
+        fg = self._foreground_process_name
+        if fg is not None and fg != VALORANT_PROCESS_NAME:
+            return
+        if self._valorant_foreground_since > 0 and time.time() - self._valorant_foreground_since < 0.75:
+            return
         prev_menu = self.menu_button_detected
         prev_dead = self.player_dead
         detection = self.visual_detector.detect(self.death_mute_enabled)
@@ -735,6 +761,7 @@ class DecypherOverlay(_OverlayBase):
         if gate.auto_death_mute_pending:
             gate.auto_death_mute_pending = False
             self._begin_startup_gate()
+            self._begin_round_start_cooldown()
         is_clove = self._is_current_agent_clove()
         if not is_clove:
             self._detect_strip_death()
@@ -979,8 +1006,12 @@ class DecypherOverlay(_OverlayBase):
             return
         self.visible = not self.visible
         if self.visible:
+            self.main_overlay_manually_hidden = False
+            self.tray_forced_visible = False
             self.root.deiconify()
         else:
+            self.main_overlay_manually_hidden = True
+            self.tray_forced_visible = False
             self.root.withdraw()
 
     def toggle_click_through(self, event=None):
@@ -1021,7 +1052,7 @@ class DecypherOverlay(_OverlayBase):
                 pass
 
     def auto_show(self):
-        if self._main_overlay_allowed():
+        if self._main_overlay_allowed() and not self.main_overlay_manually_hidden:
             self._set_main_overlay_visibility(True)
 
     def auto_hide(self):
@@ -1049,7 +1080,7 @@ class DecypherOverlay(_OverlayBase):
         while self.running:
             try:
                 if not self.api.is_game_running() or not self.api.connect():
-                    self._set_inactive_state()
+                    self._set_inactive_state(reset_manual_hide=True)
                     time.sleep(2)
                     continue
                 self._sync_audio_cache_with_api_connection()
@@ -1060,6 +1091,7 @@ class DecypherOverlay(_OverlayBase):
                 self._update_mode_gate_hint(presence.mode_id, presence.game_state, presence.source)
                 mute_mode_allowed = self._mute_mode_allowed(presence.mode_id, presence.game_state, presence.source)
                 if presence.source == 'pregame':
+                    self.last_active_match_seen_ts = time.time()
                     if not self.in_match:
                         self.in_match = True
                     if mute_mode_allowed:
@@ -1077,6 +1109,7 @@ class DecypherOverlay(_OverlayBase):
                     time.sleep(1)
                     continue
                 if presence.source == 'coregame':
+                    self.last_active_match_seen_ts = time.time()
                     local = get_local_player(presence.players)
                     if local and local.get('agent'):
                         self.current_agent_id = local['agent']
@@ -1093,15 +1126,18 @@ class DecypherOverlay(_OverlayBase):
                     self._request_dragnscroll_sync()
                     time.sleep(1)
                     continue
-                self._set_inactive_state()
+                inactive_long_enough = time.time() - self.last_active_match_seen_ts >= MANUAL_HIDE_RESET_DELAY_SECONDS
+                self._set_inactive_state(reset_manual_hide=inactive_long_enough)
                 self.root.after(0, self.agent_select.preload_if_allowed)
                 time.sleep(3)
             except Exception as exc:
                 self.update_status(f'Error: {str(exc)[:25]}')
                 time.sleep(3)
 
-    def _set_inactive_state(self):
+    def _set_inactive_state(self, reset_manual_hide: bool=False):
         self._stop_dragnscroll()
+        if reset_manual_hide:
+            self.main_overlay_manually_hidden = False
         if self.in_match or self.in_pregame:
             self.in_match = False
             self.in_pregame = False
