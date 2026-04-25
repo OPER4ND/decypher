@@ -2,13 +2,15 @@
 
 global DragScrollEnabled := true
 global DragScrollActive := false
+global DragScrollEngaged := false
 global AnchorX := 0
 global AnchorY := 0
 global ScrollAccumulator := 0
 
 ; Tuning
-global PixelsPerNotch := 20
+global PixelsPerNotch := 25
 global PollIntervalMs := 10
+global DragStartThresholdPx := 8
 
 ; Toggle drag-scroll on/off
 ^!Backspace::
@@ -28,7 +30,7 @@ global PollIntervalMs := 10
 
 *RButton::
 {
-    global DragScrollEnabled, DragScrollActive, AnchorX, AnchorY, ScrollAccumulator, PollIntervalMs
+    global DragScrollEnabled, DragScrollActive, DragScrollEngaged, AnchorX, AnchorY, ScrollAccumulator, PollIntervalMs
 
     if !DragScrollEnabled
     {
@@ -39,6 +41,7 @@ global PollIntervalMs := 10
     }
 
     DragScrollActive := true
+    DragScrollEngaged := false
     ScrollAccumulator := 0
 
     MouseGetPos &AnchorX, &AnchorY
@@ -48,18 +51,30 @@ global PollIntervalMs := 10
 
     SetTimer DragScrollTick, 0
     DragScrollActive := false
-    DllCall("SetCursorPos", "int", AnchorX, "int", AnchorY)
+    if DragScrollEngaged
+        DllCall("SetCursorPos", "int", AnchorX, "int", AnchorY)
+    else
+        Click "Right"
 }
 
 DragScrollTick()
 {
-    global DragScrollActive, AnchorX, AnchorY, ScrollAccumulator, PixelsPerNotch
+    global DragScrollActive, DragScrollEngaged, AnchorX, AnchorY, ScrollAccumulator, PixelsPerNotch, DragStartThresholdPx
 
     if !DragScrollActive
         return
 
     MouseGetPos &mx, &my
     dy := my - AnchorY
+
+    if !DragScrollEngaged
+    {
+        dx := mx - AnchorX
+        if Abs(dx) < DragStartThresholdPx && Abs(dy) < DragStartThresholdPx
+            return
+        DragScrollEngaged := true
+    }
+
     ScrollAccumulator += dy
 
     DllCall("SetCursorPos", "int", AnchorX, "int", AnchorY)

@@ -1,8 +1,17 @@
 @echo off
+setlocal
 echo ================================
 echo  decypher installer
 echo ================================
 echo.
+
+set "SCRIPT_DIR=%~dp0"
+
+if not exist "%SCRIPT_DIR%overlay.py" (
+    echo overlay.py not found in this folder.
+    pause
+    exit /b 1
+)
 
 :: Check Python
 python --version >nul 2>&1
@@ -14,7 +23,7 @@ if errorlevel 1 (
 
 :: Install dependencies
 echo installing dependencies...
-pip install -r requirements.txt -q
+python -m pip install -r "%SCRIPT_DIR%requirements.txt" -q
 echo.
 
 :: Options menu
@@ -32,21 +41,21 @@ if errorlevel 1 goto startup_and_run
 :startup_and_run
 echo.
 echo setting up auto-start...
-python setup_startup.py
+python "%SCRIPT_DIR%setup_startup.py"
 echo starting decypher...
-start "" pythonw overlay.py
+python "%SCRIPT_DIR%setup_startup.py" --launch
 goto done
 
 :startup_only
 echo.
 echo setting up auto-start...
-python setup_startup.py
+python "%SCRIPT_DIR%setup_startup.py"
 goto done
 
 :run_only
 echo.
 echo starting decypher...
-start "" pythonw overlay.py
+python "%SCRIPT_DIR%setup_startup.py" --launch
 goto done
 
 :done
@@ -55,4 +64,5 @@ echo ================================
 echo  done
 echo ================================
 echo.
+endlocal
 pause

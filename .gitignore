@@ -33,6 +33,7 @@ build-fixed/
 *.exe
 *.zip
 run.bat
+decypher.spec
 
 clove_fail.png
 clove_refine.png
@@ -52,10 +53,11 @@ traces/
 
 # Local scratch assets
 icons/
+docs/
 
 # Local secrets / machine-specific files
 .env
 *.env
 decypher_config.json
+decypher_config.example.json
 env_vars.txt
-porkbun_backup_codes.txt

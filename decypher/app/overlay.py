@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import winreg
 from decypher.audio.audio_control import AUDIO_AVAILABLE, MUTE_TARGET_BOTH, MUTE_TARGET_COMMS, MUTE_TARGET_DEFAULT, mute_valorant_target, reset_audio_session_cache
 from decypher.audio.death_mute_state import DeathMuteGateState
 from decypher.audio.game_log import GameLogTailer
@@ -70,6 +71,7 @@ class DecypherOverlay(_OverlayBase):
         self._autohotkey_checked_for_session = False
         self._cached_autohotkey_executable = None
         self._foreground_process_name = None
+        self._valorant_foreground_since = 0.0
         self.foreground_tracker = None
         self.window_width = 320
         self._create_root_window()
@@ -81,7 +83,8 @@ class DecypherOverlay(_OverlayBase):
 
     def _create_root_window(self):
         self.root = tk.Tk()
-        self.root.title('DECYPHER')
+        self.root.withdraw()
+        self.root.title('decypher')
         self._apply_app_icon()
         self.root.attributes('-topmost', True)
         self.root.attributes('-alpha', 0.92)
@@ -105,7 +108,7 @@ class DecypherOverlay(_OverlayBase):
         self.header.pack(fill='x')
         title_row = tk.Frame(self.header, bg='#161b22')
         title_row.pack(fill='x', padx=10, pady=8)
-        title = tk.Label(title_row, text='DECYPHER', font=(self.FONT_FAMILY, 16, 'bold'), fg='#58a6ff', bg='#161b22')
+        title = tk.Label(title_row, text='decypher', font=(self.FONT_FAMILY, 16, 'bold'), fg='#58a6ff', bg='#161b22')
         title.pack(side='left')
         btn_frame = tk.Frame(title_row, bg='#161b22')
         btn_frame.pack(side='right')
@@ -207,12 +210,23 @@ class DecypherOverlay(_OverlayBase):
     def _resolve_autohotkey_executable(self) -> str | None:
         if self._autohotkey_checked_for_session:
             return self._cached_autohotkey_executable
-        candidates = [shutil.which('AutoHotkey64.exe'), shutil.which('AutoHotkey.exe'), 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe', 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey.exe']
+        candidates = [shutil.which('AutoHotkey64.exe'), shutil.which('AutoHotkey.exe'), 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe', 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey.exe', os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'AutoHotkey', 'UX', 'AutoHotkeyUX.exe')]
         for candidate in candidates:
             if candidate and os.path.exists(candidate):
                 self._cached_autohotkey_executable = candidate
                 self._autohotkey_checked_for_session = True
                 return candidate
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, 'AutoHotkeyScript\\Shell\\Open\\Command') as key:
+                command, _ = winreg.QueryValueEx(key, '')
+            if command:
+                exe_path = command.strip().split('"')[1] if '"' in command else command.split()[0]
+                if exe_path and os.path.exists(exe_path):
+                    self._cached_autohotkey_executable = exe_path
+                    self._autohotkey_checked_for_session = True
+                    return exe_path
+        except Exception:
+            pass
         self._cached_autohotkey_executable = None
         self._autohotkey_checked_for_session = True
         return None
@@ -479,6 +493,8 @@ class DecypherOverlay(_OverlayBase):
 
     def _on_foreground_process_changed(self, process_name: str | None):
         self._foreground_process_name = process_name
+        if process_name == VALORANT_PROCESS_NAME:
+            self._valorant_foreground_since = time.time()
         self._request_dragnscroll_sync()
 
     def _request_dragnscroll_sync(self):
@@ -641,6 +657,11 @@ class DecypherOverlay(_OverlayBase):
 
     def _detect_strip_death(self):
         if self.death_muted:
+            return
+        fg = self._foreground_process_name
+        if fg is not None and fg != VALORANT_PROCESS_NAME:
+            return
+        if self._valorant_foreground_since > 0 and time.time() - self._valorant_foreground_since < 0.75:
             return
         prev_menu = self.menu_button_detected
         prev_dead = self.player_dead
