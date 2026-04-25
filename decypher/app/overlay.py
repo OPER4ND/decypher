@@ -56,6 +56,7 @@ class DecypherOverlay(_OverlayBase):
         self.live_score_poll_interval = 0.5
         self.current_mode_id = ''
         self.current_game_state = 'Menu'
+        self.last_mode_gate_hint = ''
         self.current_agent_id = None
         self.current_agent_name = None
         self.visual_detector = VisualDeathDetector()
@@ -333,9 +334,24 @@ class DecypherOverlay(_OverlayBase):
     def _hotkey(self, name):
         return self.hotkey_settings.get(name)
 
-    def _mute_mode_allowed(self, mode_id: str | None=None, game_state: str | None=None) -> bool:
-        mode_key = f'{mode_id or self.current_mode_id} {game_state or self.current_game_state}'.lower()
+    @staticmethod
+    def _matches_supported_mute_mode(mode_key: str) -> bool:
         return any((keyword in mode_key for keyword in SUPPORTED_MUTE_MODE_KEYWORDS))
+
+    def _update_mode_gate_hint(self, mode_id: str | None, game_state: str | None, source: str):
+        mode_key = f'{mode_id or ''} {game_state or ''}'.lower()
+        if source == 'none':
+            self.last_mode_gate_hint = ''
+        elif self._matches_supported_mute_mode(mode_key):
+            self.last_mode_gate_hint = mode_key
+
+    def _mute_mode_allowed(self, mode_id: str | None=None, game_state: str | None=None, source: str | None=None) -> bool:
+        mode_key = f'{mode_id or self.current_mode_id} {game_state or self.current_game_state}'.lower()
+        if self._matches_supported_mute_mode(mode_key):
+            return True
+        if (source or '').lower() == 'coregame':
+            return self._matches_supported_mute_mode(self.last_mode_gate_hint)
+        return False
 
     def _main_overlay_allowed(self) -> bool:
         return self.in_match and self._mute_mode_allowed()
@@ -1041,7 +1057,8 @@ class DecypherOverlay(_OverlayBase):
                 presence = get_match_presence(self.api)
                 self.current_mode_id = presence.mode_id
                 self.update_presence_panel(presence.game_state, presence.source)
-                mute_mode_allowed = self._mute_mode_allowed(presence.mode_id, presence.game_state)
+                self._update_mode_gate_hint(presence.mode_id, presence.game_state, presence.source)
+                mute_mode_allowed = self._mute_mode_allowed(presence.mode_id, presence.game_state, presence.source)
                 if presence.source == 'pregame':
                     if not self.in_match:
                         self.in_match = True
@@ -1089,6 +1106,7 @@ class DecypherOverlay(_OverlayBase):
             self.in_match = False
             self.in_pregame = False
             self.agent_select.destroy()
+            self.last_mode_gate_hint = ''
             self.current_agent_id = None
             self.current_agent_name = None
             gate = self.death_mute_gate

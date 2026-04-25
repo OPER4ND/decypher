@@ -1,6 +1,7 @@
 """Minimal Valorant local/GLZ API client used by Decypher."""
 
 import requests
+import time
 import urllib3
 
 from decypher.valorant.agent_catalog import AgentCatalog
@@ -13,6 +14,8 @@ from decypher.valorant.valorant_remote import (
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+PARTY_QUEUE_TTL = 2.0
+
 class ValorantLocalAPI:
     def __init__(self):
         self.session = requests.Session()
@@ -21,6 +24,10 @@ class ValorantLocalAPI:
         self.puuid = None
         self.remote = ValorantRemoteClient(self.session, self._request)
         self.agent_catalog = AgentCatalog()
+        self._runtime_generation = 0
+        self._party_queue_cache = ""
+        self._party_queue_cache_ts = 0.0
+        self._queue_hint = ""
 
     def is_game_running(self) -> bool:
         return self.local.is_game_running()
@@ -28,13 +35,19 @@ class ValorantLocalAPI:
     def connect(self) -> bool:
         if not self.local.is_game_running():
             self.local.lockfile_mtime = None
+            self.reset_runtime_state()
             return False
 
         if self.local.has_current_connection() and self.puuid:
             return True
 
         if not self.local.connect():
+            self.reset_runtime_state()
             return False
+
+        if self.local.connection_generation != self._runtime_generation:
+            self._runtime_generation = self.local.connection_generation
+            self.reset_runtime_state()
 
         self.remote.reset_headers()
         self._get_local_player_info()
@@ -115,6 +128,49 @@ class ValorantLocalAPI:
 
     def get_round_score_total(self) -> int | None:
         return round_score_total_from_presences(self.get_presences(), self.puuid)
+
+    def reset_runtime_state(self):
+        self._party_queue_cache = ""
+        self._party_queue_cache_ts = 0.0
+        self._queue_hint = ""
+
+    def remember_queue_hint(self, queue_id: str | None):
+        queue_value = str(queue_id or "").strip()
+        if queue_value:
+            self._queue_hint = queue_value
+
+    def get_queue_hint(self) -> str:
+        return self._queue_hint
+
+    def clear_queue_hint(self):
+        self._queue_hint = ""
+
+    def get_party_player(self) -> dict | None:
+        if not self.puuid:
+            return None
+        return self._glz_request(f"/parties/v1/players/{self.puuid}")
+
+    def get_current_party(self) -> dict | None:
+        party_player = self.get_party_player()
+        party_id = party_player.get("CurrentPartyID") if party_player else None
+        if not party_id:
+            return None
+        return self._glz_request(f"/parties/v1/parties/{party_id}")
+
+    def get_party_queue_id(self) -> str | None:
+        now = time.time()
+        if (now - self._party_queue_cache_ts) < PARTY_QUEUE_TTL:
+            return self._party_queue_cache or None
+
+        party = self.get_current_party()
+        queue_id = ""
+        if party:
+            matchmaking = party.get("MatchmakingData") or {}
+            queue_id = str(matchmaking.get("QueueID") or "").strip()
+
+        self._party_queue_cache = queue_id
+        self._party_queue_cache_ts = now
+        return queue_id or None
 
     def get_coregame_match(self) -> dict | None:
         match_info = self._glz_request(f"/core-game/v1/players/{self.puuid}")

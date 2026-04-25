@@ -35,15 +35,31 @@ def get_local_player(players: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((player for player in players if player.get("is_local")), None)
 
 
+def _join_mode_bits(*bits: object) -> str:
+    return " ".join(str(bit).strip() for bit in bits if str(bit or "").strip()).strip()
+
+
+def _queue_hint(api, *candidates: object) -> str:
+    for candidate in candidates:
+        queue_id = str(candidate or "").strip()
+        if queue_id:
+            api.remember_queue_hint(queue_id)
+            return api.get_queue_hint()
+    return api.get_queue_hint()
+
+
 def get_match_presence(api) -> MatchPresence:
+    party_queue_id = api.get_party_queue_id()
     coregame = api.get_coregame_match()
     if coregame:
-        mode_bits = [
-            str(coregame.get("ModeID") or ""),
-            str(coregame.get("QueueID") or ""),
-            str(coregame.get("ProvisioningFlowID") or ""),
-        ]
-        mode_id = " ".join(bit for bit in mode_bits if bit).strip()
+        queue_hint = _queue_hint(api, coregame.get("QueueID"))
+        if not queue_hint:
+            queue_hint = _queue_hint(api, party_queue_id)
+        mode_id = _join_mode_bits(
+            queue_hint,
+            coregame.get("ModeID"),
+            coregame.get("ProvisioningFlowID"),
+        )
         players = [
             {
                 "puuid": player.get("Subject"),
@@ -57,12 +73,13 @@ def get_match_presence(api) -> MatchPresence:
 
     pregame = api.get_pregame_match()
     if pregame:
-        mode_bits = [
-            str(pregame.get("ModeID") or ""),
-            str(pregame.get("QueueID") or ""),
-            str(pregame.get("ProvisioningFlowID") or ""),
-        ]
-        mode_id = " ".join(bit for bit in mode_bits if bit).strip()
+        queue_hint = _queue_hint(api, pregame.get("QueueID"), party_queue_id)
+        mode_id = _join_mode_bits(
+            queue_hint,
+            pregame.get("Mode"),
+            pregame.get("ModeID"),
+            pregame.get("ProvisioningFlowID"),
+        )
         ally_team = pregame.get("AllyTeam", {}).get("Players", [])
         players = [
             {
@@ -76,4 +93,5 @@ def get_match_presence(api) -> MatchPresence:
         ]
         return MatchPresence(players, "Agent Select", "pregame", mode_id)
 
+    api.clear_queue_hint()
     return MatchPresence([], "Menu", "none", "")
