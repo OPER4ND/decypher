@@ -5,8 +5,8 @@ import threading
 import tkinter as tk
 import urllib.request
 
-from valorant_api import ValorantLocalAPI
-from win32_window import apply_no_activate_toolwindow
+from decypher.platform.win32_window import apply_no_activate_toolwindow
+from decypher.valorant.valorant_api import ValorantLocalAPI
 
 try:
     from PIL import Image, ImageTk

@@ -3,10 +3,13 @@
 import requests
 import urllib3
 
-from agent_catalog import AgentCatalog
-from presence_score import round_score_total_from_presences
-from valorant_local import ValorantLocalClient
-from valorant_remote import ValorantRemoteClient, extract_puuid_from_access_token
+from decypher.valorant.agent_catalog import AgentCatalog
+from decypher.valorant.presence_score import round_score_total_from_presences
+from decypher.valorant.valorant_local import ValorantLocalClient
+from decypher.valorant.valorant_remote import (
+    ValorantRemoteClient,
+    extract_puuid_from_access_token,
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from hotkeys import DEFAULT_HOTKEYS, normalize_hotkey
+from decypher.app.hotkeys import DEFAULT_HOTKEYS, normalize_hotkey
 
 
 class HotkeySettings:

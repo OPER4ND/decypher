@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from audio_control import mute_valorant
+from decypher.audio.audio_control import mute_valorant
 
 
 @dataclass(frozen=True)

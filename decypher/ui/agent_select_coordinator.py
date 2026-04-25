@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import threading
 from typing import Callable
 
-from agent_select import AgentSelectOverlay
-from presence import get_local_player
+from decypher.ui.agent_select import AgentSelectOverlay
+from decypher.valorant.presence import get_local_player
 
 
 @dataclass(frozen=True)

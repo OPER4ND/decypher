@@ -43,7 +43,6 @@ FALLBACK_AGENT_ROLES = {
     "Vyse": "Sentinels",
 }
 
-# Agent UUIDs used by pregame select/lock.
 AGENTS = {
     "Iso": "0e38b510-41a8-5780-5e8f-568b2a4f2d6c",
     "Jett": "add6443a-41bd-e414-f6ad-e58d267f4e95",

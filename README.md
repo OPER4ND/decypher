@@ -34,6 +34,13 @@ python -m PyInstaller decypher.spec --noconfirm
 
 The executable is written to `dist\decypher.exe`.
 
+## Layout
+
+- `decypher/`: main application package
+- `scripts/`: runtime helper scripts such as drag-scroll
+- `docs/`: project notes and internal behavior docs
+- root: launcher, build spec, config example, and install scripts
+
 ## Install Built EXE
 
 After building or downloading a release package, run:
@@ -51,7 +58,7 @@ install_exe.bat
 
 ## Optional Script
 
-`dragnscroll.ahk` is included in the repo for drag-to-scroll behavior. Decypher starts and stops it automatically while VALORANT is running, focused, and not in a live match. This requires AutoHotkey v2 to be installed; if AutoHotkey is missing, Decypher simply skips the script.
+`scripts/dragnscroll.ahk` is included in the repo for drag-to-scroll behavior. Decypher starts and stops it automatically while VALORANT is running, focused, and not in a live match. This requires AutoHotkey v2 to be installed; if AutoHotkey is missing, Decypher simply skips the script.
 
 ## Behavior
 
